@@ -241,11 +241,20 @@ def run_luxia():
             # GESTIONE PDF (SAFE MODE)
             elif ftype == 'pdf':
                 st.info("📄 Documento PDF rilevato.")
-                # Embed PDF per visualizzazione browser nativa
-                base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
-                st.warning("Per l'analisi AI Vision, converti la pagina in JPG.")
+                pdf_bytes = uploaded_file.getvalue()
+    
+                # Crea un bottone di anteprima che apre il PDF in una nuova scheda (Metodo sicuro)
+                st.download_button(
+                    label="👁️ Apri PDF per visualizzarlo",
+                    data=pdf_bytes,
+                    file_name=uploaded_file.name,
+                    mime="application/pdf"
+                )
+    
+    # Tentativo di rendering alternativo con altezza fissa
+    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=0" width="100%" height="600" style="border:none;"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
                 
             # GESTIONE DXF (CAD)
             elif ftype == 'dxf':
@@ -318,4 +327,5 @@ def run_luxia():
             st.warning("Completa prima la fase 2 per sbloccare il report.")
 
 if __name__ == "__main__":
+
     run_luxia()
