@@ -1,73 +1,55 @@
 import streamlit as st
 import numpy as np
-import plotly.graph_objects as go
 import sqlite3
 import hashlib
 import base64
 import requests
-from bs4 import BeautifulSoup
+import io
 from fpdf import FPDF
 from datetime import datetime
+from groq import Groq
 
-# --- 1. DATABASE ARCHITECTURE (GERARCHIA VANI) ---
+# --- 1. DATABASE CONFIG (SUPPORTO PDF E MEDIA) ---
 def init_db():
     conn = sqlite3.connect('luxia_titan.db')
     c = conn.cursor()
-    # Utenti
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (username TEXT PRIMARY KEY, password TEXT, studio_name TEXT, logo_b64 TEXT)''')
-    # Progetti (Contenitore)
     c.execute('''CREATE TABLE IF NOT EXISTS projects 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, p_name TEXT, client TEXT, date TEXT)''')
-    # Vani (Dettagli tecnici collegati al progetto)
+    # Supporto per foto (img_blob) e documenti PDF (pdf_blob)
     c.execute('''CREATE TABLE IF NOT EXISTS rooms 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, r_name TEXT, 
                   w REAL, l REAL, h REAL, brand TEXT, model TEXT, qty INTEGER, 
-                  price REAL, lux_avg REAL, optics TEXT, strategy TEXT,
-                  FOREIGN KEY(project_id) REFERENCES projects(id))''')
+                  price REAL, lux_avg REAL, strategy TEXT, img_blob BLOB, pdf_blob BLOB, pdf_name TEXT)''')
     conn.commit()
     conn.close()
 
-# --- 2. BEGA CONNECTOR ---
-def get_bega_data(product_code):
-    code = product_code.replace(" ", "").replace(".", "")
-    url = f"https://www.bega.com/it/prodotti/{code}/"
-    try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            # Estrattore semplificato - in produzione va raffinato sui selettori BEGA
-            return {"lumen": 3500, "watt": 30, "success": True, "url": url}
-    except: pass
-    return {"success": False}
-
-# --- 3. PDF GENERATOR ---
+# --- 2. GENERATORE PDF RELAZIONE ---
 class LuxiaPDF(FPDF):
     def header(self):
-        if 'user_logo_b64' in st.session_state and st.session_state.user_logo_b64:
+        if st.session_state.get('user_logo_b64'):
             with open("temp_logo.png", "wb") as f:
                 f.write(base64.b64decode(st.session_state.user_logo_b64))
             self.image("temp_logo.png", 10, 8, 25)
         self.set_font('Arial', 'B', 12)
         self.set_xy(40, 10)
-        self.cell(0, 5, st.session_state.studio_name.upper(), ln=True)
-        self.set_font('Arial', 'I', 8)
-        self.set_x(40)
-        self.cell(0, 5, "Relazione Illuminotecnica Multi-Vano", ln=True)
+        self.cell(0, 5, st.session_state.get('studio_name', 'LUXiA').upper(), ln=True)
         self.ln(20)
 
-# --- 4. CORE APPLICATION ---
+# --- 3. CORE APP ---
 def main():
-    st.set_page_config(page_title="LUXiA", layout="wide", page_icon="💡")
+    st.set_page_config(page_title="LUXiA Titan v5.3", layout="wide", initial_sidebar_state="expanded")
     init_db()
 
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
+    if 'current_proj_id' not in st.session_state: st.session_state.current_proj_id = None
 
-    # --- LOGIN / REGISTRAZIONE ---
+    # --- LOGIN ---
     if not st.session_state.logged_in:
-        st.title("💡 LUXiA | Portale Professionale")
-        auth_tab = st.tabs(["Accedi", "Registrati"])
-        with auth_tab[0]:
+        st.title("💡 LUXiA | Professional Lighting Design")
+        t_auth = st.tabs(["Accedi", "Registrati"])
+        with t_auth[0]:
             u = st.text_input("Username")
             p = st.text_input("Password", type="password")
             if st.button("Entra"):
@@ -81,137 +63,156 @@ def main():
                     st.session_state.user_logo_b64 = res[1]
                     st.rerun()
                 else: st.error("Accesso negato.")
-        with auth_tab[1]:
-            nu, npw, ns = st.text_input("Nuovo User"), st.text_input("Nuova Pass", type="password"), st.text_input("Nome Studio")
-            if st.button("Crea Account"):
-                try:
-                    conn = sqlite3.connect('luxia_titan.db')
-                    conn.execute("INSERT INTO users VALUES (?,?,?,?)", (nu, hashlib.sha256(npw.encode()).hexdigest(), ns, None))
-                    conn.commit()
-                    st.success("Registrato! Accedi ora.")
-                except: st.error("Username occupato.")
+        with t_auth[1]:
+            nu, npw, ns = st.text_input("User"), st.text_input("Pass", type="password"), st.text_input("Nome Studio")
+            if st.button("Registrati"):
+                conn = sqlite3.connect('luxia_titan.db')
+                conn.execute("INSERT INTO users VALUES (?,?,?,?)", (nu, hashlib.sha256(npw.encode()).hexdigest(), ns, None))
+                conn.commit()
+                st.success("Registrato!")
         return
 
-    # --- SIDEBAR & NAVIGAZIONE ---
+    # --- SIDEBAR ---
     with st.sidebar:
         st.title("LUXiA Titan")
         if st.session_state.user_logo_b64:
-            st.image(base64.b64decode(st.session_state.user_logo_b64), width=100)
+            st.image(base64.b64decode(st.session_state.user_logo_b64), width=150)
         
-        st.subheader(f"Studio: {st.session_state.studio_name}")
-        
-        # Gestione Progetti Esistenti
-        conn = sqlite3.connect('luxia_titan.db')
-        projs = conn.execute("SELECT id, p_name FROM projects WHERE username=?", (st.session_state.username,)).fetchall()
-        proj_list = {p[1]: p[0] for p in projs}
+        up_logo = st.file_uploader("Upload Logo Studio", type=['png','jpg'])
+        if up_logo:
+            b64 = base64.b64encode(up_logo.read()).decode()
+            conn = sqlite3.connect('luxia_titan.db')
+            conn.execute("UPDATE users SET logo_b64=? WHERE username=?", (b64, st.session_state.username))
+            conn.commit()
+            st.session_state.user_logo_b64 = b64
+            st.rerun()
+
+        st.divider()
+        groq_key = st.text_input("Groq API Key", type="password")
+        if groq_key:
+            st.session_state.groq_client = Groq(api_key=groq_key)
         
         st.divider()
-        sel_proj = st.selectbox("📂 Seleziona Progetto", ["-- Nuovo Progetto --"] + list(proj_list.keys()))
+        conn = sqlite3.connect('luxia_titan.db')
+        projs = conn.execute("SELECT id, p_name FROM projects WHERE username=?", (st.session_state.username,)).fetchall()
+        proj_dict = {p[1]: p[0] for p in projs}
+        sel = st.selectbox("📂 Progetti", ["-- Crea Nuovo --"] + list(proj_dict.keys()))
         
-        if sel_proj != "-- Nuovo Progetto --":
-            st.session_state.current_proj_id = proj_list[sel_proj]
-            st.session_state.current_proj_name = sel_proj
+        if sel != "-- Crea Nuovo --":
+            st.session_state.current_proj_id = proj_dict[sel]
+            st.session_state.current_proj_name = sel
         else:
             st.session_state.current_proj_id = None
 
-        if st.button("Logout"):
+        if st.button("🚪 Logout"):
             st.session_state.logged_in = False
             st.rerun()
 
-    # --- MAIN CONTENT ---
-    if not st.session_state.get('current_proj_id'):
-        st.header("Crea un nuovo Progetto per iniziare")
-        with st.form("new_proj"):
-            np_name = st.text_input("Nome Progetto (es. Centro Direzionale)")
-            np_client = st.text_input("Cliente")
-            if st.form_submit_button("Crea Progetto"):
+    # --- CONTENT ---
+    if not st.session_state.current_proj_id:
+        st.header("Crea un nuovo Progetto")
+        pn = st.text_input("Nome Progetto")
+        cl = st.text_input("Cliente")
+        if st.button("Crea e Apri Progetto"):
+            if pn:
                 conn = sqlite3.connect('luxia_titan.db')
                 cur = conn.cursor()
                 cur.execute("INSERT INTO projects (username, p_name, client, date) VALUES (?,?,?,?)", 
-                            (st.session_state.username, np_name, np_client, datetime.now().strftime("%Y-%m-%d")))
+                            (st.session_state.username, pn, cl, datetime.now().strftime("%Y-%m-%d")))
+                new_id = cur.lastrowid
                 conn.commit()
+                st.session_state.current_proj_id = new_id
+                st.session_state.current_proj_name = pn
                 st.rerun()
     else:
-        st.title(f"🏢 Progetto: {st.session_state.current_proj_name}")
-        tab_list, tab_edit, tab_pdf = st.tabs(["📋 Elenco Vani", "📐 Configura Vano", "📄 Report Finale"])
+        st.title(f"🏢 {st.session_state.current_proj_name}")
+        t1, t2, t3 = st.tabs(["📋 Elenco Vani", "📐 Progettazione & PDF", "📄 Report Finale"])
 
-        with tab_list:
-            st.subheader("Vani inseriti in questo progetto")
+        with t1:
             conn = sqlite3.connect('luxia_titan.db')
-            rooms = conn.execute("SELECT r_name, lux_avg, model, qty FROM rooms WHERE project_id=?", (st.session_state.current_proj_id,)).fetchall()
+            rooms = conn.execute("SELECT r_name, lux_avg, model, qty, img_blob, pdf_blob, pdf_name FROM rooms WHERE project_id=?", 
+                                (st.session_state.current_proj_id,)).fetchall()
             if rooms:
                 for r in rooms:
-                    st.write(f"✅ **{r[0]}**: {r[1]:.0f} Lux medi con {r[3]}x {r[2]}")
-            else:
-                st.info("Nessun vano ancora configurato.")
+                    with st.expander(f"📍 {r[0]}"):
+                        c_info, c_media = st.columns([2,1])
+                        c_info.write(f"Risultato: **{r[1]:.0f} Lux** | {r[3]}x {r[2]}")
+                        if r[4]: c_media.image(r[4], caption="Planimetria/Foto")
+                        if r[5]:
+                            # Download del PDF salvato nel DB
+                            c_info.download_button(f"📄 Scarica {r[6]}", data=r[5], file_name=r[6])
+            else: st.info("Nessun vano presente.")
 
-        with tab_edit:
-            st.subheader("Configurazione Ambiente")
-            with st.form("room_form"):
-                r_name = st.text_input("Nome Ambiente (es. Soggiorno, Ufficio 1)")
+        with t2:
+            st.subheader("Nuovo Vano: Carica Planimetrie PDF e Dati")
+            with st.form("add_room_v53", clear_on_submit=True):
+                r_name = st.text_input("Nome Ambiente")
                 c1, c2, c3 = st.columns(3)
-                rw = c1.number_input("Larghezza (m)", 1.0, 100.0, 10.0)
-                rl = c2.number_input("Lunghezza (m)", 1.0, 100.0, 15.0)
-                rh = c3.number_input("Altezza (m)", 2.0, 20.0, 3.5)
+                w = c1.number_input("Larghezza (m)", 1.0, 100.0, 6.0)
+                l = c2.number_input("Lunghezza (m)", 1.0, 100.0, 8.0)
+                h = c3.number_input("Altezza (m)", 2.0, 20.0, 3.0)
+                
+                st.write("📂 **Allegati Tecnici**")
+                file_img = st.file_uploader("Carica Foto/Immagine (JPG/PNG)", type=['png','jpg','jpeg'])
+                file_pdf = st.file_uploader("Carica Documento/Planimetria (PDF)", type=['pdf'])
                 
                 st.divider()
-                st.write("🔦 Selezione Apparecchio")
-                vendor = st.radio("Fornitore", ["BEGA (Auto)", "Altro (Manuale)"], horizontal=True)
+                brand = st.selectbox("Marca", ["BEGA", "iGuzzini", "Artemide", "Altro"])
+                mod = st.text_input("Codice Modello")
+                q = st.number_input("Q.tà", 1, 500, 6)
+                pr = st.number_input("Prezzo Unit. (€)", 0.0, 5000.0, 220.0)
                 
-                col_a, col_b = st.columns(2)
-                if vendor == "BEGA (Auto)":
-                    code = col_a.text_input("Codice BEGA")
-                    model = code
-                    lumen = 3500 # Default se scraping fallisce
-                else:
-                    model = col_a.text_input("Modello")
-                    lumen = col_b.number_input("Lumen", 100, 50000, 3000)
-                
-                qty = st.number_input("Quantità", 1, 500, 8)
-                price = st.number_input("Prezzo Listino Unitario (€)", 0.0, 5000.0, 250.0)
-                
-                if st.form_submit_button("Calcola e Aggiungi Vano"):
-                    # Logica AI Luxia
-                    lux = (qty * lumen * 0.65) / (rw * rl)
-                    strategy = f"Soluzione ottimale per {r_name}. Il brand garantisce alte prestazioni."
+                if st.form_submit_button("Salva Ambiente nel Database"):
+                    img_data = file_img.read() if file_img else None
+                    pdf_data = file_pdf.read() if file_pdf else None
+                    pdf_name = file_pdf.name if file_pdf else None
                     
-                    conn = sqlite3.connect('luxia_titan.db')
-                    conn.execute('''INSERT INTO rooms (project_id, r_name, w, l, h, brand, model, qty, price, lux_avg, strategy) 
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''', 
-                                 (st.session_state.current_proj_id, r_name, rw, rl, rh, vendor, model, qty, price, lux, strategy))
-                    conn.commit()
-                    st.success(f"Ambiente {r_name} aggiunto al progetto!")
+                    lux = (q * 3200 * 0.6) / (w * l)
+                    strat = "Calcolo in corso..."
+                    
+                    if 'groq_client' in st.session_state:
+                        p = f"Ambiente: {r_name} ({w*l}mq). Apparecchi: {q}x {brand} {mod}. Spiega perché questa scelta è professionale."
+                        chat = st.session_state.groq_client.chat.completions.create(
+                            messages=[{"role":"user","content":p}], model="llama-3.3-70b-versatile"
+                        )
+                        strat = chat.choices[0].message.content
 
-        with tab_pdf:
-            st.header("Esportazione Totale Progetto")
-            if st.button("Genera Relazione Completa"):
+                    conn = sqlite3.connect('luxia_titan.db')
+                    conn.execute('''INSERT INTO rooms (project_id, r_name, w, l, h, brand, model, qty, price, lux_avg, strategy, img_blob, pdf_blob, pdf_name) 
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', 
+                                 (st.session_state.current_proj_id, r_name, rw, rl, rh, brand, mod, q, pr, lux, strat, img_data, pdf_data, pdf_name))
+                    conn.commit()
+                    st.success("Ambiente e PDF archiviati correttamente!")
+                    st.rerun()
+
+        with t3:
+            st.subheader("Generazione Report e Computo Metrico")
+            if st.button("Genera PDF Finale Progetto"):
                 pdf = LuxiaPDF()
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 16)
-                pdf.cell(0, 10, f"PROGETTO: {st.session_state.current_proj_name}", ln=True)
+                pdf.cell(0, 10, f"RELAZIONE COMPLETA: {st.session_state.current_proj_name}", ln=True)
                 
                 conn = sqlite3.connect('luxia_titan.db')
-                rooms_data = conn.execute("SELECT * FROM rooms WHERE project_id=?", (st.session_state.current_proj_id,)).fetchall()
-                
-                total_val = 0
-                for r in rooms_data:
-                    pdf.ln(10)
+                data = conn.execute("SELECT * FROM rooms WHERE project_id=?", (st.session_state.current_proj_id,)).fetchall()
+                total_cost = 0
+                for r in data:
+                    pdf.ln(8)
                     pdf.set_font("Arial", 'B', 12)
-                    pdf.set_fill_color(240, 240, 240)
-                    pdf.cell(0, 10, f"Ambiente: {r[2]}", 1, ln=True, fill=True)
+                    pdf.cell(0, 10, f"Vano: {r[2]}", fill=False, ln=True)
                     pdf.set_font("Arial", '', 10)
-                    pdf.cell(0, 7, f"Dimensioni: {r[3]}x{r[4]}m (H: {r[5]}m)", ln=True)
-                    pdf.cell(0, 7, f"Apparecchio: {r[8]} ({r[7]}) - Q.ta: {r[9]}", ln=True)
-                    pdf.set_font("Arial", 'B', 10)
-                    pdf.cell(0, 7, f"Illuminamento Medio: {r[11]:.0f} Lux", ln=True)
-                    total_val += (r[9] * r[10])
+                    pdf.multi_cell(0, 6, f"- Dimensioni: {r[3]}x{r[4]}m (Area: {r[3]*r[4]}mq)\n- Illuminamento stimato: {r[11]:.0f} Lux\n- Fornitura: {r[9]}x {r[8]} ({r[7]})")
+                    if r[12]: 
+                        pdf.set_font("Arial", 'I', 9)
+                        pdf.multi_cell(0, 5, f"AI Strategy: {r[12]}")
+                    total_cost += (r[9]*r[10])
                 
-                pdf.ln(15)
-                pdf.set_font("Arial", 'B', 14)
-                pdf.cell(0, 10, f"VALORE TOTALE FORNITURA: {total_val:,.2f} EUR", ln=True)
+                pdf.ln(10)
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(0, 10, f"TOTALE INVESTIMENTO FORNITURA: {total_cost:,.2f} EUR", ln=True)
                 
                 pdf_bytes = pdf.output(dest='S').encode('latin-1')
-                st.download_button("📥 Scarica Report LUXiA Titan", data=pdf_bytes, file_name=f"LUXiA_{st.session_state.current_proj_name}.pdf")
+                st.download_button("📥 Scarica Report LUXiA", data=pdf_bytes, file_name=f"{st.session_state.current_proj_name}_LUXiA.pdf")
 
 if __name__ == "__main__":
     main()
