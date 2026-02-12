@@ -9,3 +9,4 @@ ezdxf
 Pillow
 streamlit-drawable-canvas 
 opencv-python-headless
+pymupdf
