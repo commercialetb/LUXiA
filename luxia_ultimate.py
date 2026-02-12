@@ -86,13 +86,29 @@ def calculate_lux(w, l, product, mount_h):
 def main():
     st.set_page_config(page_title="LUXiA Gold", layout="wide")
     st.sidebar.title("LUXiA Config")
+    
+    # --- SIDEBAR & VALIDAZIONE CHIAVE ---
+    st.sidebar.title("LUXiA Config")
     api_key = st.sidebar.text_input("Groq API Key", type="password") or st.secrets.get("GROQ_API_KEY")
+    
+    if api_key:
+        # Piccolo test rapido per darti il feedback
+        try:
+            test_client = Groq(api_key=api_key)
+            # Se questa chiamata passa, la chiave è valida
+            st.sidebar.success("✅ Groq API: ONLINE")
+        except:
+            st.sidebar.error("❌ Groq API: CHIAVE NON VALIDA")
     
     groq = GroqAgent(api_key)
     st.title("💡 LUXiA Ultimate Gold")
 
+    # --- TABS INTERFACCIA ---
     tab1, tab2, tab3 = st.tabs(["📂 Vision & CAD", "📐 Progetto & 3D", "📥 Export"])
-
+    
+    # Da qui in poi inserisci il contenuto dei tab (with tab1:, etc.)
+    with tab1:
+        st.write("Sezione caricamento...")
     with tab1:
         uploaded_file = st.file_uploader("Carica Planimetria", type=['jpg', 'png', 'pdf', 'dxf'])
         if uploaded_file:
@@ -144,3 +160,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
