@@ -1,0 +1,10 @@
+streamlit
+groq
+numpy
+pandas
+plotly
+shapely
+fpdf
+requests
+beautifulsoup4
+ezdxf
