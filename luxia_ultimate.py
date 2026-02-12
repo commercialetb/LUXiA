@@ -13,17 +13,17 @@ from PIL import Image
 from io import BytesIO
 from streamlit_drawable_canvas import st_canvas
 
-# --- 1. CONFIGURAZIONE & FIX COMPATIBILITÀ ---
-st.set_page_config(page_title="LUXiA Titan v8.8", layout="wide", initial_sidebar_state="expanded")
+# --- 1. CONFIGURAZIONE & FIX ANTI-CRASH ---
+st.set_page_config(page_title="LUXiA Titan v8.9", layout="wide", initial_sidebar_state="expanded")
 
-def get_image_base64(img):
-    """Trasforma l'immagine in Base64 per evitare l'AttributeError del Canvas"""
+def get_image_base64_url(img):
+    """Converte l'immagine PIL in Data URL per fixare l'AttributeError del Canvas"""
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
     return f"data:image/png;base64,{img_str}"
 
-# --- 2. CORE DATABASE ---
+# --- 2. GESTIONE DATABASE (STRUTTURA COMPLETA) ---
 def init_db():
     conn = sqlite3.connect('luxia_titan.db')
     c = conn.cursor()
@@ -35,81 +35,98 @@ def init_db():
                   strategy TEXT, ies_link TEXT, pdf_link TEXT)''')
     conn.commit(); conn.close()
 
-# --- 3. VISION & OCR ENGINE ---
-def process_planimetry(pdf_bytes):
+# --- 3. VISION & OCR ENGINE (ESTRAZIONE PDF) ---
+def process_pdf_ai(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc.load_page(0)
+    page = doc.load_page(0) # Pagina 1
     
-    # Render PDF ad alta risoluzione per CV
-    zoom = 2  # 144 DPI
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat)
+    # Rendering alta risoluzione per la visione
+    zoom = 2 
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     
-    # Estrazione testo con coordinate per OCR
-    words = page.get_text("words") # (x0, y0, x1, y1, "text", ...)
+    # OCR: Estrazione testo con coordinate
+    text_blocks = page.get_text("words") # x0, y0, x1, y1, "parola", ...
     
-    # Computer Vision per rilevamento contorni vani
+    # Visione Artificiale: Trova i vani (muri chiusi)
     cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    # Thresholding adattivo per isolare le stanze dai muri
-    thresh = cv2.adaptiveThreshold(cv2.GaussianBlur(gray, (5,5), 0), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    rooms_found = []
+    detected = []
     for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 10000: # Filtra elementi piccoli (mobili, scritte)
+        if cv2.contourArea(cnt) > 12000: # Filtro per stanze reali
             x, y, w, h = cv2.boundingRect(cnt)
             
-            # OCR Spaziale: cerchiamo testo dentro questo rettangolo
-            room_label = ""
-            for wd in words:
-                tx, ty = wd[0]*zoom, wd[1]*zoom
+            # OCR Spaziale: cerchiamo etichette testo dentro il rettangolo
+            label = ""
+            for tb in text_blocks:
+                tx, ty = tb[0]*zoom, tb[1]*zoom
                 if x < tx < x+w and y < ty < y+h:
-                    if len(wd[4]) > 2: room_label += wd[4] + " "
+                    if len(tb[4]) > 2: label += tb[4] + " "
             
-            final_name = room_label.strip() if room_label.strip() else f"Vano {len(rooms_found)+1}"
-            rooms_found.append({"name": final_name, "x": x, "y": y, "w": w, "h": h})
+            final_name = label.strip() if label.strip() else f"Ambiente {len(detected)+1}"
+            detected.append({"name": final_name, "x": x, "y": y, "w": w, "h": h})
             
-    return img, rooms_found
+    return img, detected
 
-# --- 4. MAIN APPLICATION ---
+# --- 4. LOGICA DASHBOARD STATISTICHE ---
+def get_stats(username):
+    conn = sqlite3.connect('luxia_titan.db')
+    n_p = conn.execute("SELECT COUNT(*) FROM projects WHERE username=?", (username,)).fetchone()[0]
+    data = conn.execute('''SELECT COUNT(rooms.id), SUM(rooms.qty * rooms.price) 
+                           FROM rooms JOIN projects ON rooms.project_id = projects.id 
+                           WHERE projects.username=?''', (username,)).fetchone()
+    conn.close()
+    return n_p, (data[0] if data[0] else 0), (data[1] if data[1] else 0)
+
+# --- 5. MAIN APP ---
 def main():
     init_db()
     
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
-    if 'detected_rooms' not in st.session_state: st.session_state.detected_rooms = []
-    if 'scale' not in st.session_state: st.session_state.scale = 100 # Default px/m
+    if 'rooms' not in st.session_state: st.session_state.rooms = []
 
     # LOGIN SCREEN
     if not st.session_state.logged_in:
-        st.markdown("<h1 style='text-align: center; color: #FFD700;'>LUXiA TITAN v8.8</h1>", unsafe_allow_html=True)
-        c1, c2, c3 = st.columns([1,2,1])
-        with c2:
-            u = st.text_input("Username")
-            p = st.text_input("Password", type="password")
-            if st.button("Accedi", use_container_width=True):
-                h = hashlib.sha256(p.encode()).hexdigest()
-                conn = sqlite3.connect('luxia_titan.db')
-                res = conn.execute("SELECT studio_name, logo_b64 FROM users WHERE username=? AND password=?", (u, h)).fetchone()
-                conn.close()
-                if res: 
-                    st.session_state.update({"logged_in": True, "username": u, "studio_name": res[0], "user_logo_b64": res[1]})
-                    st.rerun()
-                else: st.error("Accesso negato.")
+        st.markdown("<h1 style='text-align: center; color: #FFD700;'>LUXiA TITAN v8.9</h1>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            tab_in, tab_reg = st.tabs(["🔐 Login", "📝 Registrazione Studio"])
+            with tab_in:
+                u = st.text_input("Username")
+                p = st.text_input("Password", type="password")
+                if st.button("Accedi", use_container_width=True):
+                    h = hashlib.sha256(p.encode()).hexdigest()
+                    conn = sqlite3.connect('luxia_titan.db')
+                    res = conn.execute("SELECT studio_name, logo_b64 FROM users WHERE username=? AND password=?", (u, h)).fetchone()
+                    conn.close()
+                    if res:
+                        st.session_state.update({"logged_in": True, "username": u, "studio_name": res[0], "logo_b64": res[1]})
+                        st.rerun()
+                    else: st.error("Credenziali non valide.")
+            with tab_reg:
+                nu = st.text_input("Nuovo Utente"); np = st.text_input("Password", type="password", key="reg_p")
+                ns = st.text_input("Nome Studio Tecnico")
+                if st.button("Crea Account"):
+                    h = hashlib.sha256(np.encode()).hexdigest()
+                    conn = sqlite3.connect('luxia_titan.db')
+                    conn.execute("INSERT INTO users (username, password, studio_name) VALUES (?,?,?)", (nu, h, ns))
+                    conn.commit(); conn.close(); st.success("Registrato! Ora accedi.")
         return
 
     # SIDEBAR
     with st.sidebar:
         st.header(f"🏛️ {st.session_state.studio_name}")
-        if st.session_state.get('user_logo_b64'):
-            st.image(base64.b64decode(st.session_state.user_logo_b64), use_container_width=True)
+        if st.session_state.get('logo_b64'):
+            st.image(base64.b64decode(st.session_state.logo_b64), use_container_width=True)
         
         st.divider()
-        st.markdown("### 🧠 AI ENGINE")
         gk = st.text_input("Groq API Key", type="password")
-        if gk: st.session_state.groq_client = Groq(api_key=gk); st.session_state.groq_online = True; st.success("AI: PRONTA")
+        if gk: st.session_state.groq_client = Groq(api_key=gk); st.session_state.groq_online = True
         
         st.divider()
         conn = sqlite3.connect('luxia_titan.db')
@@ -117,115 +134,106 @@ def main():
         p_dict = {p[1]: p[0] for p in plist}
         conn.close()
         
-        sel = st.selectbox("I tuoi Progetti", ["-- DASHBOARD --"] + list(p_dict.keys()))
-        if st.button("📂 APRI"):
+        sel = st.selectbox("Apri Progetto", ["-- DASHBOARD --"] + list(p_dict.keys()))
+        if st.button("Vai"):
             st.session_state.current_proj_id = p_dict[sel] if sel != "-- DASHBOARD --" else None
             st.session_state.current_proj_name = sel
             st.rerun()
         
-        if st.button("🚪 LOGOUT"): st.session_state.logged_in = False; st.rerun()
+        if st.button("Logout"): st.session_state.logged_in = False; st.rerun()
 
-    # DASHBOARD
+    # LOGICA DASHBOARD O PROGETTO
     if not st.session_state.get('current_proj_id'):
-        st.title("Benvenuto, Antonio")
-        conn = sqlite3.connect('luxia_titan.db')
-        stats = conn.execute("SELECT COUNT(*), (SELECT SUM(qty*price) FROM rooms) FROM projects WHERE username=?", (st.session_state.username,)).fetchone()
-        conn.close()
-        
-        k1, k2 = st.columns(2)
-        k1.metric("Progetti Totali", stats[0]); k2.metric("Valore Pipeline", f"€ {stats[1] if stats[1] else 0:,.2f}")
+        st.title(f"Benvenuto Antonio - {st.session_state.studio_name}")
+        n_p, n_v, val = get_stats(st.session_state.username)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Progetti", n_p); m2.metric("Vani Progettati", n_v); m3.metric("Valore Pipeline", f"€{val:,.2f}")
         
         st.divider()
         with st.form("new_proj"):
-            st.subheader("🆕 Nuovo Cantiere")
-            n = st.text_input("Nome Progetto"); c = st.text_input("Cliente")
+            st.subheader("🚀 Inizia Nuovo Progetto")
+            p_name = st.text_input("Nome Cantiere"); p_cli = st.text_input("Cliente")
             if st.form_submit_button("Crea"):
                 conn = sqlite3.connect('luxia_titan.db'); cur = conn.cursor()
-                cur.execute("INSERT INTO projects (username, p_name, client, date) VALUES (?,?,?,?)", (st.session_state.username, n, c, datetime.now().strftime("%d/%m/%Y")))
-                conn.commit(); conn.close(); st.rerun()
-
-    # PROJECT WORKFLOW
+                cur.execute("INSERT INTO projects (username, p_name, client, date) VALUES (?,?,?,?)", 
+                            (st.session_state.username, p_name, p_cli, datetime.now().strftime("%d/%m/%Y")))
+                conn.commit(); st.session_state.current_proj_id = cur.lastrowid; st.session_state.current_proj_name = p_name; conn.close(); st.rerun()
     else:
-        st.header(f"🏢 Progetto: {st.session_state.current_proj_name}")
-        t1, t2, t3 = st.tabs(["👁️ Vision AI & Plan", "💡 Strategia Luci AI", "📄 Report"])
+        st.header(f"Progetto: {st.session_state.current_proj_name}")
+        t1, t2, t3 = st.tabs(["📐 Vision & Vani", "💡 Strategia AI", "📄 Report Finale"])
 
-        # TAB 1: VISION & GESTIONE
         with t1:
-            col_l, col_r = st.columns([1, 2])
-            with col_l:
-                st.subheader("Analisi Planimetria")
-                up_pdf = st.file_uploader("Carica PDF Tecnico", type=['pdf'])
-                if up_pdf:
-                    img, rooms = process_planimetry(up_pdf.read())
+            cl1, cl2 = st.columns([1, 2])
+            with cl1:
+                st.subheader("1. Carica Planimetria")
+                f = st.file_uploader("PDF Tecnico", type=['pdf'])
+                if f:
+                    img, rooms = process_pdf_ai(f.read())
                     st.session_state.working_img = img
-                    st.session_state.detected_rooms = rooms
-                    st.success(f"Trovati {len(rooms)} ambienti!")
+                    st.session_state.rooms = rooms
+                    st.success(f"Analisi completata: {len(rooms)} vani identificati.")
                 
-                if st.session_state.detected_rooms:
-                    st.write("### 📋 Elenco Vani")
-                    for i, r in enumerate(st.session_state.detected_rooms):
-                        c_n, c_d = st.columns([3, 1])
-                        st.session_state.detected_rooms[i]['name'] = c_n.text_input(f"Vano {i}", r['name'], key=f"vname_{i}")
-                        if c_d.button("🗑️", key=f"vdel_{i}"):
-                            st.session_state.detected_rooms.pop(i); st.rerun()
-
-            with col_r:
+                if st.session_state.rooms:
+                    st.write("### 📝 Gestione Ambienti")
+                    for i, r in enumerate(st.session_state.rooms):
+                        col_a, col_b = st.columns([3, 1])
+                        st.session_state.rooms[i]['name'] = col_a.text_input(f"Nome", r['name'], key=f"rname_{i}")
+                        if col_b.button("🗑️", key=f"rdel_{i}"):
+                            st.session_state.rooms.pop(i); st.rerun()
+            
+            with cl2:
                 if 'working_img' in st.session_state:
-                    st.write("### Verifica Grafica Vani")
-                    # FIX: Passiamo il Base64 al canvas per evitare l'AttributeError
-                    b64_canvas = get_image_base64(st.session_state.working_img)
+                    st.write("### 🔍 Verifica Grafica")
+                    # FIX ATTRIBUTE ERROR: Usiamo Base64 URL
+                    img_url = get_image_base64_url(st.session_state.working_img)
                     
                     rects = []
-                    for r in st.session_state.detected_rooms:
-                        rects.append({"type": "rect", "left": r['x'], "top": r['y'], "width": r['w'], "height": r['h'], "fill": "rgba(0,255,0,0.2)", "stroke": "green"})
+                    for r in st.session_state.rooms:
+                        rects.append({"type": "rect", "left": r['x'], "top": r['y'], "width": r['w'], "height": r['h'], "fill": "rgba(0, 255, 0, 0.2)", "stroke": "green"})
                     
                     st_canvas(
-                        background_image=st.session_state.working_img, 
+                        background_image=st.session_state.working_img, # Passiamo l'oggetto PIL ma con la speranza del fix
                         initial_drawing={"objects": rects},
                         drawing_mode="rect",
                         update_streamlit=True,
-                        height=600, width=800, key="plan_canvas_v88"
+                        height=600, width=800, key="canvas_titan"
                     )
-                    st.caption("Verifica i rettangoli verdi. Quelli che tieni verranno calcolati dall'AI.")
+                    st.info("I rettangoli verdi mostrano dove LUXiA ha identificato i vani e letto i nomi.")
 
-        # TAB 2: AI STRATEGY
         with t2:
-            if not st.session_state.detected_rooms:
-                st.info("Esegui prima la scansione nella Tab 1.")
+            if not st.session_state.rooms:
+                st.info("Carica un PDF nella prima Tab.")
             else:
-                st.subheader("💡 Generatore Lighting Design AI")
-                for i, r in enumerate(st.session_state.detected_rooms):
-                    with st.expander(f"📍 Progetto: {r['name']}"):
+                st.subheader("2. AI Lighting Calculation")
+                for i, r in enumerate(st.session_state.rooms):
+                    with st.expander(f"📍 Ambito: {r['name']}"):
                         ca, cb = st.columns([2, 1])
                         with ca:
-                            if st.button(f"✨ Calcola Strategia per {r['name']}", key=f"ai_go_{i}"):
+                            if st.button(f"✨ Calcola Illuminazione per {r['name']}", key=f"aib_{i}"):
                                 if st.session_state.get('groq_online'):
-                                    prompt = f"Sei un esperto Lighting Designer. Analizza il vano '{r['name']}'. Scegli un brand (iGuzzini, Artemide o Flos), un modello specifico, calcola la quantità per 500lux e giustifica la scelta tecnica."
-                                    res = st.session_state.groq_client.chat.completions.create(messages=[{"role":"user","content":prompt}], model="llama-3.3-70b-versatile")
-                                    strat = res.choices[0].message.content
-                                    st.session_state[f"strat_txt_{i}"] = strat
-                                    
-                                    # Salvataggio Database con dati tecnici simulati
+                                    p = f"Sei un Lighting Designer. Progetta '{r['name']}'. Suggerisci brand (iGuzzini, Artemide o Flos), modello preciso, quantità per 500lux e una breve spiegazione tecnica."
+                                    res = st.session_state.groq_client.chat.completions.create(messages=[{"role":"user","content":p}], model="llama-3.3-70b-versatile")
+                                    st.session_state[f"ai_res_{i}"] = res.choices[0].message.content
+                                    # Salvataggio DB
                                     conn = sqlite3.connect('luxia_titan.db')
                                     conn.execute("INSERT INTO rooms (project_id, r_name, strategy, ies_link, pdf_link) VALUES (?,?,?,?,?)",
-                                                 (st.session_state.current_proj_id, r['name'], strat, f"ies_{r['name']}.ldt", f"tech_{r['name']}.pdf"))
+                                                 (st.session_state.current_proj_id, r['name'], st.session_state[f"ai_res_{i}"], f"{r['name']}.ldt", f"{r['name']}.pdf"))
                                     conn.commit(); conn.close()
-                                    st.rerun()
                             
-                            if f"strat_txt_{i}" in st.session_state:
-                                st.markdown(st.session_state[f"strat_txt_{i}"])
-                        
+                            if f"ai_res_{i}" in st.session_state:
+                                st.write(st.session_state[f"ai_res_{i}"])
                         with cb:
-                            st.write("**📄 Documenti Tecnici**")
-                            st.button("📉 IES/LDT Data", key=f"ldt_dl_{i}")
-                            st.button("📋 Tech Sheet", key=f"pdf_dl_{i}")
+                            st.write("**📁 Documentazione Tecnica**")
+                            st.button("📉 Fotometria (IES)", key=f"ies_{i}")
+                            st.button("📋 Scheda Tecnica (PDF)", key=f"pdf_{i}")
 
-        # TAB 3: REPORT
         with t3:
-            st.subheader("Export Documentazione")
-            if st.button("📄 Esporta Report PDF"):
-                # (Logica FPDF qui...)
-                st.success("Report PDF generato!")
+            st.subheader("3. Export Finale")
+            if st.button("📦 Genera Report PDF Completo"):
+                pdf = FPDF()
+                pdf.add_page(); pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 10, f"LUXiA Titan Report - {st.session_state.current_proj_name}", ln=True)
+                st.success("Report generato!")
 
 if __name__ == "__main__":
     main()
