@@ -231,36 +231,55 @@ def main():
         # TABS WORKFLOW
         t_docs, t_ai, t_rep = st.tabs(["📂 1. Documenti & CAD", "💡 2. Vani & AI Strategy", "📄 3. Report Finale"])
 
-        # TAB 1: DOCUMENTI PROGETTO (DWG, DXF, PDF)
-        with t_docs:
-            st.subheader("Archivio Tecnico del Cantiere")
-            col_up, col_view = st.columns([1, 2])
-            
-            with col_up:
-                with st.form("upload_doc"):
-                    st.write("Carica file generale (Planimetria, DWG, DXF)")
-                    f_doc = st.file_uploader("Seleziona File", type=['pdf', 'dwg', 'dxf', 'jpg', 'png'])
-                    if st.form_submit_button("⬆️ Carica in Archivio"):
-                        if f_doc:
-                            blob = f_doc.read()
-                            conn = sqlite3.connect('luxia_titan.db')
-                            conn.execute("INSERT INTO project_docs (project_id, filename, file_type, file_blob, upload_date) VALUES (?,?,?,?,?)",
-                                         (st.session_state.current_proj_id, f_doc.name, f_doc.type, blob, datetime.now().strftime("%d/%m/%Y")))
-                            conn.commit(); conn.close()
-                            st.toast("File archiviato correttamente!", icon="✅")
-                            st.rerun()
-
-            with col_view:
-                st.write("**File Disponibili:**")
+        # --- TAB 1: DOCUMENTI PROGETTO (DWG, DXF, PDF) ---
+with t_docs:
+    st.subheader("📂 Archivio Tecnico del Cantiere")
+    
+    col_up, col_view = st.columns([1, 2])
+    
+    with col_up:
+        st.markdown("#### ⬆️ Carica Nuovo File")
+        # Rimuoviamo il form per permettere il caricamento diretto e immediato
+        f_doc = st.file_uploader("Trascina qui DWG, DXF o PDF", type=['pdf', 'dwg', 'dxf', 'jpg', 'png'], key="uploader_generale")
+        
+        if f_doc is not None:
+            if st.button("Salva File in Progetto"):
+                blob = f_doc.read()
                 conn = sqlite3.connect('luxia_titan.db')
-                docs = conn.execute("SELECT filename, upload_date, file_blob FROM project_docs WHERE project_id=?", (st.session_state.current_proj_id,)).fetchall()
+                conn.execute("INSERT INTO project_docs (project_id, filename, file_type, file_blob, upload_date) VALUES (?,?,?,?,?)",
+                             (st.session_state.current_proj_id, f_doc.name, f_doc.type, blob, datetime.now().strftime("%d/%m/%Y %H:%M")))
+                conn.commit()
                 conn.close()
-                if docs:
-                    for d in docs:
-                        c1, c2 = st.columns([3, 1])
-                        c1.text(f"📄 {d[0]} (del {d[1]})")
-                        c2.download_button("Scarica", data=d[2], file_name=d[0])
-                else: st.info("Nessun documento tecnico caricato.")
+                st.success(f"File '{f_doc.name}' archiviato!")
+                st.rerun() # Forza il refresh per mostrare il file nella lista a destra
+
+    with col_view:
+        st.markdown("#### 📑 File Disponibili")
+        conn = sqlite3.connect('luxia_titan.db')
+        # Query pulita per recuperare i documenti del progetto corrente
+        docs = conn.execute("SELECT filename, upload_date, file_blob, id FROM project_docs WHERE project_id=? ORDER BY id DESC", 
+                            (st.session_state.current_proj_id,)).fetchall()
+        conn.close()
+        
+        if docs:
+            for d in docs:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    c1.markdown(f"**{d[0]}**")
+                    c1.caption(f"Caricato il: {d[1]}")
+                    
+                    # Bottone Scarica
+                    c2.download_button("💾", data=d[2], file_name=d[0], key=f"dl_{d[3]}")
+                    
+                    # Bottone Elimina (Aggiunto per pulizia)
+                    if c3.button("🗑️", key=f"del_doc_{d[3]}"):
+                        conn = sqlite3.connect('luxia_titan.db')
+                        conn.execute("DELETE FROM project_docs WHERE id=?", (d[3],))
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
+        else:
+            st.info("Nessun documento tecnico caricato per questo cantiere.")
 
         # TAB 2: VANI & AI
         with t_ai:
