@@ -1,14 +1,9 @@
 # LIGHTING AGENT PRO v2.0
 # Installa con: pip install -r requirements.txt
 
-streamlit==1.32.0
-pandas==2.2.0
-numpy==1.26.4
-matplotlib==3.8.3
-Pillow==10.2.0
-reportlab==4.1.0
-scipy==1.12.0
-openpyxl==3.1.2
-python-docx==1.1.0
-ollama==0.1.8
-opencv-python-headless==4.9.0.80
+streamlit>=1.32.0
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+Pillow>=9.0.0
+openpyxl>=3.1.0
