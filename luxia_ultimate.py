@@ -66,7 +66,7 @@ st.markdown("""
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
-# DATABASE SQLITE — UTENTI E PROGETTI
+# DATABASE SQLITE
 # ============================================================
 DB_PATH = "luxia_data.db"
 
@@ -92,36 +92,30 @@ def init_db():
         risultati_json TEXT,
         prev_json TEXT
     )""")
-    admin_hash = hashlib.sha256("admin2026".encode()).hexdigest()
-    con.execute("INSERT OR IGNORE INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
-                ("admin","admin@luxia.it",admin_hash,datetime.now().isoformat()))
-    demo_hash = hashlib.sha256("demo123".encode()).hexdigest()
-    con.execute("INSERT OR IGNORE INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
-                ("demo","demo@luxia.it",demo_hash,datetime.now().isoformat()))
-    con.commit()
-    con.close()
+    for uname, upwd in [("admin","admin2026"),("demo","demo123"),("progett","luce2026")]:
+        h = hashlib.sha256(upwd.encode()).hexdigest()
+        con.execute("INSERT OR IGNORE INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
+                    (uname, f"{uname}@luxia.it", h, datetime.now().isoformat()))
+    con.commit(); con.close()
 
-def hash_password(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
+def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
 
-def check_user(username, password):
+def check_user(u, p):
     con = sqlite3.connect(DB_PATH)
-    row = con.execute("SELECT password_hash FROM users WHERE username=?", (username,)).fetchone()
+    row = con.execute("SELECT password_hash FROM users WHERE username=?", (u,)).fetchone()
     con.close()
-    return row is not None and row[0] == hash_password(password)
+    return row is not None and row[0] == hash_pw(p)
 
-def user_exists(username):
+def user_exists(u):
     con = sqlite3.connect(DB_PATH)
-    row = con.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-    con.close()
-    return row is not None
+    row = con.execute("SELECT id FROM users WHERE username=?", (u,)).fetchone()
+    con.close(); return row is not None
 
-def register_user(username, email, password):
+def register_user(u, email, p):
     con = sqlite3.connect(DB_PATH)
     con.execute("INSERT INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
-                (username, email, hash_password(password), datetime.now().isoformat()))
-    con.commit()
-    con.close()
+                (u, email, hash_pw(p), datetime.now().isoformat()))
+    con.commit(); con.close()
 
 def save_project(username, nome, committente, progettista, num_tav, aree, risultati, prev):
     con = sqlite3.connect(DB_PATH)
@@ -132,162 +126,131 @@ def save_project(username, nome, committente, progettista, num_tav, aree, risult
         rc["calc"] = {k2: v2 for k2, v2 in r.get("calc", {}).items()
                       if isinstance(v2, (str, int, float, bool, list, type(None)))}
         ris_clean.append(rc)
-    existing = con.execute(
-        "SELECT id FROM projects WHERE username=? AND nome_progetto=?",
-        (username, nome)).fetchone()
-    if existing:
-        con.execute("""UPDATE projects SET committente=?,progettista=?,num_tavola=?,
-                    data_modifica=?,aree_json=?,risultati_json=?,prev_json=?
-                    WHERE username=? AND nome_progetto=?""",
-                    (committente, progettista, num_tav, now,
-                     json.dumps(aree, ensure_ascii=False),
-                     json.dumps(ris_clean, ensure_ascii=False),
-                     json.dumps(prev if prev else {}, ensure_ascii=False),
-                     username, nome))
+    ex = con.execute("SELECT id FROM projects WHERE username=? AND nome_progetto=?", (username, nome)).fetchone()
+    if ex:
+        con.execute("""UPDATE projects SET committente=?,progettista=?,num_tavola=?,data_modifica=?,
+                    aree_json=?,risultati_json=?,prev_json=? WHERE username=? AND nome_progetto=?""",
+                    (committente,progettista,num_tav,now,
+                     json.dumps(aree,ensure_ascii=False),
+                     json.dumps(ris_clean,ensure_ascii=False),
+                     json.dumps(prev or {},ensure_ascii=False),
+                     username,nome))
     else:
         con.execute("""INSERT INTO projects
                     (username,nome_progetto,committente,progettista,num_tavola,
                      data_creazione,data_modifica,aree_json,risultati_json,prev_json)
                     VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (username, nome, committente, progettista, num_tav, now, now,
-                     json.dumps(aree, ensure_ascii=False),
-                     json.dumps(ris_clean, ensure_ascii=False),
-                     json.dumps(prev if prev else {}, ensure_ascii=False)))
-    con.commit()
-    con.close()
+                    (username,nome,committente,progettista,num_tav,now,now,
+                     json.dumps(aree,ensure_ascii=False),
+                     json.dumps(ris_clean,ensure_ascii=False),
+                     json.dumps(prev or {},ensure_ascii=False)))
+    con.commit(); con.close()
 
 def load_projects_list(username):
     con = sqlite3.connect(DB_PATH)
-    rows = con.execute(
-        "SELECT id, nome_progetto, committente, data_modifica FROM projects WHERE username=? ORDER BY data_modifica DESC",
-        (username,)).fetchall()
-    con.close()
-    return rows
+    rows = con.execute("SELECT id,nome_progetto,committente,data_modifica FROM projects WHERE username=? ORDER BY data_modifica DESC",(username,)).fetchall()
+    con.close(); return rows
 
-def load_project_data(project_id):
+def load_project_data(pid):
     con = sqlite3.connect(DB_PATH)
-    row = con.execute(
-        "SELECT nome_progetto,committente,progettista,num_tavola,aree_json,risultati_json,prev_json FROM projects WHERE id=?",
-        (project_id,)).fetchone()
+    row = con.execute("SELECT nome_progetto,committente,progettista,num_tavola,aree_json,risultati_json,prev_json FROM projects WHERE id=?",(pid,)).fetchone()
     con.close()
     if row:
-        return {
-            "nome": row[0], "committente": row[1], "progettista": row[2],
-            "num_tavola": row[3],
-            "aree":      json.loads(row[4]) if row[4] else [],
-            "risultati": json.loads(row[5]) if row[5] else [],
-            "prev":      json.loads(row[6]) if row[6] else {},
-        }
+        return {"nome":row[0],"committente":row[1],"progettista":row[2],"num_tavola":row[3],
+                "aree":json.loads(row[4]) if row[4] else [],
+                "risultati":json.loads(row[5]) if row[5] else [],
+                "prev":json.loads(row[6]) if row[6] else {}}
     return None
 
-def delete_project(project_id):
+def delete_project(pid):
     con = sqlite3.connect(DB_PATH)
-    con.execute("DELETE FROM projects WHERE id=?", (project_id,))
-    con.commit()
-    con.close()
+    con.execute("DELETE FROM projects WHERE id=?",(pid,)); con.commit(); con.close()
 
 init_db()
 
 # ============================================================
-# AI VISION — RICONOSCIMENTO AREE (Groq → Gemini → Ollama)
+# AI VISION — Groq → Gemini → Ollama
 # ============================================================
 def analizza_planimetria_ai(image_bytes, groq_key="", gemini_key=""):
-    if not REQ_OK:
-        return []
+    if not REQ_OK: return []
     b64 = base64.b64encode(image_bytes).decode()
     prompt = (
-        "Analizza questa planimetria architettonica. "
-        "Per ogni stanza/ambiente visibile restituisci SOLO JSON valido:\n"
-        '{"areas": [{"name": "Nome stanza", "type": "Ufficio VDT", "area_m2": 30.0}]}\n'
-        "Tipi validi: Ufficio VDT, Corridoio, Bagno/WC, Sala riunioni, Archivio, "
+        'Analizza questa planimetria. Per ogni stanza restituisci SOLO JSON valido:\n'
+        '{"areas":[{"name":"Nome","type":"Ufficio VDT","area_m2":30.0}]}\n'
+        "Tipi: Ufficio VDT, Corridoio, Bagno/WC, Sala riunioni, Archivio, "
         "Ingresso, Mensa/Ristoro, Locale tecnico, Reception, Laboratorio."
     )
+    def _parse(testo):
+        m = re.search(r'\{.*\}', testo, re.DOTALL)
+        if m:
+            try:
+                d = json.loads(m.group())
+                return d.get("areas", [])
+            except Exception:
+                pass
+        return []
+
     if groq_key:
         try:
-            resp = requests.post(
+            r = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}","Content-Type":"application/json"},
-                json={"model":"llama-3.2-11b-vision-preview",
+                json={"model":"llama-3.2-11b-vision-preview","temperature":0.1,"max_tokens":1024,
                       "messages":[{"role":"user","content":[
                           {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},
-                          {"type":"text","text":prompt}
-                      ]}],"max_tokens":1024,"temperature":0.1},
-                timeout=30)
-            testo = resp.json()["choices"][0]["message"]["content"]
-            match = re.search(r'\{.*\}', testo, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
-                if data.get("areas"):
-                    return data["areas"]
+                          {"type":"text","text":prompt}]}]}, timeout=30)
+            areas = _parse(r.json()["choices"][0]["message"]["content"])
+            if areas: return areas
         except Exception as e:
             st.warning(f"Groq: {e}")
+
     if gemini_key:
         try:
-            resp = requests.post(
+            r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_key}",
                 json={"contents":[{"parts":[
                     {"inline_data":{"mime_type":"image/jpeg","data":b64}},
-                    {"text":prompt}
-                ]}]},timeout=30)
-            testo = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            match = re.search(r'\{.*\}', testo, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
-                if data.get("areas"):
-                    return data["areas"]
+                    {"text":prompt}]}]}, timeout=30)
+            areas = _parse(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            if areas: return areas
         except Exception as e:
             st.warning(f"Gemini: {e}")
+
     try:
-        resp = requests.post("http://localhost:11434/api/generate",
-            json={"model":"llava","stream":False,"prompt":prompt,"images":[b64]},
-            timeout=120)
-        testo = resp.json().get("response","")
-        match = re.search(r'\{.*\}', testo, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            if data.get("areas"):
-                return data["areas"]
+        r = requests.post("http://localhost:11434/api/generate",
+            json={"model":"llava","stream":False,"prompt":prompt,"images":[b64]}, timeout=120)
+        areas = _parse(r.json().get("response",""))
+        if areas: return areas
     except Exception as e:
         st.warning(f"Ollama: {e}")
     return []
 
 def detect_scala_ai(image_bytes, groq_key="", gemini_key=""):
-    if not REQ_OK:
-        return ""
+    if not REQ_OK: return ""
     b64 = base64.b64encode(image_bytes).decode()
-    prompt = ("Guarda questa planimetria. C'e' indicata una scala tipo 1:50, 1:100, 1:200? "
-              "Rispondi SOLO con il numero dopo i due punti (es. 100) oppure non trovata.")
+    prompt = "Questa planimetria ha una scala (1:50, 1:100, 1:200, 1:500)? Rispondi SOLO col numero dopo i due punti, es: 100. Se non la vedi scrivi: 0."
+    def _num(t):
+        m = re.search(r'\d+', t.strip())
+        return f"1:{m.group()}" if m and int(m.group()) > 0 else ""
     if groq_key:
         try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization":f"Bearer {groq_key}"},
-                json={"model":"llama-3.2-11b-vision-preview",
+                json={"model":"llama-3.2-11b-vision-preview","max_tokens":20,"temperature":0,
                       "messages":[{"role":"user","content":[
                           {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},
-                          {"type":"text","text":prompt}
-                      ]}],"max_tokens":50,"temperature":0.0},
-                timeout=20)
-            testo = resp.json()["choices"][0]["message"]["content"].strip()
-            m = re.search(r'\d+', testo)
-            if m:
-                return f"1:{m.group()}"
-        except Exception:
-            pass
+                          {"type":"text","text":prompt}]}]}, timeout=20)
+            return _num(r.json()["choices"][0]["message"]["content"])
+        except Exception: pass
     if gemini_key:
         try:
-            resp = requests.post(
+            r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_key}",
                 json={"contents":[{"parts":[
                     {"inline_data":{"mime_type":"image/jpeg","data":b64}},
-                    {"text":prompt}
-                ]}]},timeout=20)
-            testo = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            m = re.search(r'\d+', testo)
-            if m:
-                return f"1:{m.group()}"
-        except Exception:
-            pass
+                    {"text":prompt}]}]}, timeout=20)
+            return _num(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+        except Exception: pass
     return ""
 
 # ============================================================
@@ -304,35 +267,31 @@ if not st.session_state.logged_in:
     <h2 style="text-align:center;color:#1a365d">💡 Lighting Agent Pro</h2>
     <p style="text-align:center;color:#666">v4.0 — Accesso riservato</p>
     </div>""", unsafe_allow_html=True)
-    col_a, col_b, col_c = st.columns([1, 2, 1])
+    _, col_b, _ = st.columns([1,2,1])
     with col_b:
-        tab_login, tab_reg = st.tabs(["🔐 Login", "📝 Registrati"])
-        with tab_login:
-            user_input = st.text_input("Username", key="li_user")
-            pass_input = st.text_input("Password", type="password", key="li_pass")
-            if st.button("Entra 🔐", key="btn_login"):
-                if check_user(user_input.strip(), pass_input):
+        tl, tr = st.tabs(["🔐 Login","📝 Registrati"])
+        with tl:
+            u = st.text_input("Username", key="li_u")
+            p = st.text_input("Password", type="password", key="li_p")
+            if st.button("Entra 🔐", key="btn_li"):
+                if check_user(u.strip(), p):
                     st.session_state.logged_in = True
-                    st.session_state.username  = user_input.strip()
+                    st.session_state.username  = u.strip()
                     st.rerun()
                 else:
                     st.error("❌ Credenziali non valide")
-        with tab_reg:
-            new_user  = st.text_input("Username *", key="reg_user")
-            new_email = st.text_input("Email",      key="reg_email")
-            new_pass  = st.text_input("Password *", type="password", key="reg_pass")
-            new_pass2 = st.text_input("Conferma password *", type="password", key="reg_pass2")
+        with tr:
+            nu  = st.text_input("Username *",        key="r_u")
+            ne  = st.text_input("Email",             key="r_e")
+            np1 = st.text_input("Password *",        type="password", key="r_p1")
+            np2 = st.text_input("Conferma password", type="password", key="r_p2")
             if st.button("Registrati ✅", key="btn_reg"):
-                if not new_user.strip() or not new_pass:
-                    st.error("Username e password obbligatori.")
-                elif len(new_pass) < 6:
-                    st.error("Password minimo 6 caratteri.")
-                elif new_pass != new_pass2:
-                    st.error("Le password non coincidono.")
-                elif user_exists(new_user.strip()):
-                    st.error("Username già in uso.")
+                if not nu.strip() or not np1:      st.error("Campi obbligatori mancanti.")
+                elif len(np1) < 6:                 st.error("Password minimo 6 caratteri.")
+                elif np1 != np2:                   st.error("Le password non coincidono.")
+                elif user_exists(nu.strip()):       st.error("Username già in uso.")
                 else:
-                    register_user(new_user.strip(), new_email.strip(), new_pass)
+                    register_user(nu.strip(), ne.strip(), np1)
                     st.success("✅ Account creato! Ora puoi fare login.")
     st.stop()
 
@@ -1259,39 +1218,28 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📏 Scala planimetria")
     if st.button("🔍 Rileva scala con AI") and "plan_bytes" in st.session_state:
-        with st.spinner("Rilevamento scala..."):
-            scala_trovata = detect_scala_ai(
+        with st.spinner("Rilevamento in corso..."):
+            s = detect_scala_ai(
                 st.session_state.plan_bytes,
                 groq_key=st.session_state.get("groq_key",""),
                 gemini_key=st.session_state.get("gemini_key",""),
             )
-        if scala_trovata:
-            st.success(f"Scala rilevata: {scala_trovata}")
-            st.session_state.scala_suggerita = scala_trovata
-        else:
-            st.warning("Scala non rilevata, imposta manualmente.")
-    scala_options = ["1:50","1:100","1:200","1:500"]
-    scala_default = st.session_state.get("scala_suggerita","1:100")
-    scala_idx = scala_options.index(scala_default) if scala_default in scala_options else 1
-    scala_sel = st.selectbox("Scala planimetria", scala_options, index=scala_idx)
-    scala_map = {"1:50":1.25,"1:100":2.5,"1:200":5.0,"1:500":12.5}
-    scala_mpp = scala_map.get(scala_sel, 2.5)
-    st.caption(f"1 pixel = {scala_mpp/100:.4f} m  |  100px = {scala_mpp} m")
+        st.success(f"Scala rilevata: {s}") if s else st.warning("Non rilevata, imposta manualmente.")
+        if s: st.session_state.scala_suggerita = s
+    _sopts = ["1:50","1:100","1:200","1:500"]
+    _sdef  = st.session_state.get("scala_suggerita","1:100")
+    _sidx  = _sopts.index(_sdef) if _sdef in _sopts else 1
+    _ssel  = st.selectbox("Scala", _sopts, index=_sidx)
+    scala_mpp = {"1:50":1.25,"1:100":2.5,"1:200":5.0,"1:500":12.5}.get(_ssel, 2.5)
+    st.caption(f"100px = {scala_mpp} m")
 
     st.markdown("---")
-    with st.expander("🤖 AI Vision — Chiavi API (gratuite)"):
-        st.caption("Nessuna carta di credito richiesta")
-        groq_key_in = st.text_input("Groq API Key",
-            value=st.session_state.get("groq_key",""),
-            type="password", help="console.groq.com")
-        gemini_key_in = st.text_input("Google Gemini API Key",
-            value=st.session_state.get("gemini_key",""),
-            type="password", help="aistudio.google.com")
-        if groq_key_in:
-            st.session_state.groq_key = groq_key_in
-        if gemini_key_in:
-            st.session_state.gemini_key = gemini_key_in
-        st.info("Fallback: Groq → Gemini → Ollama locale")
+    with st.expander("🤖 Chiavi API AI Vision (gratuite)"):
+        _gk  = st.text_input("Groq API Key",   value=st.session_state.get("groq_key",""),   type="password", help="console.groq.com")
+        _gmk = st.text_input("Gemini API Key", value=st.session_state.get("gemini_key",""), type="password", help="aistudio.google.com")
+        if _gk:  st.session_state.groq_key   = _gk
+        if _gmk: st.session_state.gemini_key = _gmk
+        st.caption("Fallback automatico: Groq → Gemini → Ollama locale")
 
 # ============================================================
 # HEADER
@@ -1417,45 +1365,99 @@ else:
 
     # --- AI VISION ---
     st.markdown("---")
-    st.markdown("#### 🤖 AI Vision (riconoscimento automatico aree)")
-    st.info("Fallback automatico: Groq → Gemini → Ollama locale. Configura le chiavi nella sidebar.")
-    if "plan_bytes" in st.session_state:
-        col_ai1, col_ai2 = st.columns([3,1])
-        with col_ai1:
-            gk_ok  = "✅" if st.session_state.get("groq_key")   else "⚠️ non configurato"
-            gmk_ok = "✅" if st.session_state.get("gemini_key") else "⚠️ non configurato"
-            st.caption(f"Groq: {gk_ok}  |  Gemini: {gmk_ok}  |  Ollama: localhost:11434")
-        with col_ai2:
-            ai_btn = st.button("🔍 Analizza con AI", type="primary")
+    st.markdown("""
+<div style="background:linear-gradient(135deg,#1a365d,#2b6cb0);padding:1.2rem 1.5rem;
+border-radius:12px;margin-bottom:1rem;">
+<h3 style="color:white;margin:0">🤖 Rileva Aree con AI</h3>
+<p style="color:#bee3f8;margin:.3rem 0 0;font-size:.9rem">
+Groq (gratuito) → Gemini (gratuito) → Ollama locale &nbsp;|&nbsp;
+Riconosce automaticamente stanze, tipo e superficie dalla planimetria
+</p></div>""", unsafe_allow_html=True)
+
+    if "plan_bytes" not in st.session_state:
+        st.warning("⬆️ Carica prima una planimetria nella sidebar per usare AI Vision.")
+    else:
+        gk_ok  = "✅ Groq configurato"  if st.session_state.get("groq_key")   else "⚠️ Groq non configurato"
+        gmk_ok = "✅ Gemini configurato" if st.session_state.get("gemini_key") else "⚠️ Gemini non configurato"
+        st.caption(f"{gk_ok}  |  {gmk_ok}  |  Ollama: localhost:11434  |  Configura le chiavi API nella sidebar")
+
+        col_btn1, col_btn2, col_btn3 = st.columns([2,2,3])
+        with col_btn1:
+            ai_btn = st.button("🔍 RILEVA AREE CON AI", type="primary", use_container_width=True)
+        with col_btn2:
+            if st.button("🗑️ Cancella risultati AI", use_container_width=True):
+                st.session_state.pop("ai_areas_preview", None)
+                st.rerun()
+        with col_btn3:
+            st.caption("Il riconoscimento richiede ~5-15 secondi con Groq/Gemini")
+
         if ai_btn:
-            with st.spinner("Analisi AI in corso..."):
-                areas_found = analizza_planimetria_ai(
+            with st.spinner("🔍 Analisi AI in corso... (Groq → Gemini → Ollama)"):
+                found = analizza_planimetria_ai(
                     st.session_state.plan_bytes,
                     groq_key=st.session_state.get("groq_key",""),
                     gemini_key=st.session_state.get("gemini_key",""),
                 )
-            if areas_found:
-                for a in areas_found:
-                    tipo = a.get("type","Ufficio VDT")
-                    if tipo not in REQUISITI:
-                        tipo = "Ufficio VDT"
-                    area_m2 = float(a.get("area_m2", 30.0))
-                    st.session_state.aree.append({
-                        "nome":          a.get("name", f"Area_AI_{len(st.session_state.aree)+1}"),
-                        "tipo_locale":   tipo,
-                        "superficie_m2": area_m2,
-                        "altezza_m":     2.70,
-                        "lampada":       list(DB_LAMPADE.keys())[0],
-                        "sup":           area_m2,
-                        "emergenza":     False,
-                        "polygon_px":    a.get("polygon_px",[]),
-                    })
-                st.success(f"✅ AI ha trovato {len(areas_found)} aree!")
-                st.rerun()
+            if found:
+                st.session_state.ai_areas_preview = found
+                st.success(f"✅ AI ha identificato **{len(found)} aree** — Verifica e conferma qui sotto")
             else:
-                st.error("⚠️ Nessuna area rilevata. Verifica le chiavi API nella sidebar.")
-    else:
-        st.info("Carica una planimetria per usare AI Vision.")
+                st.error("❌ Nessuna area rilevata. Verifica le chiavi API nella sidebar o aggiungi le aree manualmente.")
+
+        # ── ANTEPRIMA con modifica prima di confermare ──
+        if st.session_state.get("ai_areas_preview"):
+            st.markdown("##### ✏️ Verifica e modifica le aree rilevate dall'AI prima di aggiungerle")
+            preview = st.session_state.ai_areas_preview
+            cols_hdr = st.columns([3,3,2,2,2])
+            for h, c in zip(["Nome area","Tipo locale","m²","h (m)","Emergenza?"], cols_hdr):
+                c.markdown(f"**{h}**")
+            edited = []
+            for i, a in enumerate(preview):
+                tipo_ai = a.get("type","Ufficio VDT")
+                if tipo_ai not in REQUISITI: tipo_ai = "Ufficio VDT"
+                c1,c2,c3,c4,c5 = st.columns([3,3,2,2,2])
+                with c1:
+                    nome_e = st.text_input("", value=a.get("name",f"Area_{i+1}"),
+                                           key=f"ai_n_{i}", label_visibility="collapsed")
+                with c2:
+                    tipo_e = st.selectbox("", list(REQUISITI.keys()),
+                                          index=list(REQUISITI.keys()).index(tipo_ai),
+                                          key=f"ai_t_{i}", label_visibility="collapsed")
+                with c3:
+                    sup_e = st.number_input("", value=float(a.get("area_m2",30.0)),
+                                            min_value=1.0, step=0.5,
+                                            key=f"ai_s_{i}", label_visibility="collapsed")
+                with c4:
+                    alt_e = st.number_input("", value=2.70, min_value=2.0, step=0.05,
+                                            key=f"ai_h_{i}", label_visibility="collapsed")
+                with c5:
+                    em_e = st.checkbox("", key=f"ai_em_{i}", label_visibility="collapsed")
+                edited.append({"nome":nome_e,"tipo_locale":tipo_e,
+                               "superficie_m2":sup_e,"altezza_m":alt_e,"emergenza":em_e})
+
+            st.markdown("---")
+            c_ok, c_skip = st.columns([2,1])
+            with c_ok:
+                if st.button("✅ AGGIUNGI TUTTE LE AREE RILEVATE", type="primary", use_container_width=True):
+                    default_lamp = list(DB_LAMPADE.keys())[0]
+                    for ed in edited:
+                        st.session_state.aree.append({
+                            "nome":          ed["nome"],
+                            "tipo_locale":   ed["tipo_locale"],
+                            "superficie_m2": ed["superficie_m2"],
+                            "altezza_m":     ed["altezza_m"],
+                            "lampada":       default_lamp,
+                            "sup":           ed["superficie_m2"],
+                            "emergenza":     ed["emergenza"],
+                            "polygon_px":    [],
+                        })
+                    st.session_state.pop("ai_areas_preview", None)
+                    st.success(f"✅ {len(edited)} aree aggiunte con successo!")
+                    st.rerun()
+            with c_skip:
+                if st.button("↩️ Annulla", use_container_width=True):
+                    st.session_state.pop("ai_areas_preview", None)
+                    st.rerun()
 
     # --- LISTA AREE ---
     st.markdown("---")
@@ -1902,75 +1904,64 @@ La relazione completa include in un **unico PDF**:
                     key="dl_prev_r7")
 
 # ============================================================
-# TAB 8 — PROGETTI (DATABASE)
+# TAB 8 — PROGETTI
 # ============================================================
 with tab8:
     st.subheader("📁 Gestione Progetti")
-
     col_save, col_load = st.columns(2)
-
     with col_save:
         st.markdown("#### 💾 Salva progetto corrente")
         if not st.session_state.aree:
             st.info("Aggiungi almeno un'area prima di salvare.")
         else:
-            nome_save = st.text_input("Nome progetto da salvare", value=nome_prog, key="nome_save")
+            nome_save = st.text_input("Nome progetto", value=nome_prog, key="nome_save")
             if st.button("💾 SALVA PROGETTO", type="primary"):
                 try:
                     save_project(
-                        username    = st.session_state.username,
-                        nome        = nome_save.strip(),
-                        committente = committente,
-                        progettista = progettista,
-                        num_tav     = num_tav,
-                        aree        = st.session_state.aree,
-                        risultati   = st.session_state.get("risultati", []),
-                        prev        = st.session_state.get("prev", {}),
+                        st.session_state.username, nome_save.strip(),
+                        committente, progettista, num_tav,
+                        st.session_state.aree,
+                        st.session_state.get("risultati",[]),
+                        st.session_state.get("prev",{}),
                     )
                     st.success(f"✅ Progetto «{nome_save}» salvato!")
                 except Exception as e:
-                    st.error(f"Errore salvataggio: {e}")
-
+                    st.error(f"Errore: {e}")
     with col_load:
         st.markdown("#### 📂 Carica progetto salvato")
         progetti = load_projects_list(st.session_state.username)
         if not progetti:
             st.info("Nessun progetto salvato.")
         else:
-            proj_options = {f"{p[1]} — {p[2]} ({p[3][:10]})": p[0] for p in progetti}
-            proj_sel = st.selectbox("Seleziona progetto", list(proj_options.keys()), key="proj_sel")
-            col_l1, col_l2 = st.columns(2)
-            with col_l1:
+            proj_opts = {f"{p[1]} — {p[2]} ({p[3][:10]})": p[0] for p in progetti}
+            proj_sel  = st.selectbox("Progetto", list(proj_opts.keys()), key="proj_sel")
+            cl1, cl2  = st.columns(2)
+            with cl1:
                 if st.button("📂 CARICA", type="primary"):
                     try:
-                        pid  = proj_options[proj_sel]
-                        data = load_project_data(pid)
+                        data = load_project_data(proj_opts[proj_sel])
                         if data:
                             st.session_state.aree      = data["aree"]
-                            st.session_state.risultati = data["risultati"] if data["risultati"] else []
-                            if data["prev"]:
-                                st.session_state.prev  = data["prev"]
-                            st.success(f"✅ Progetto «{data['nome']}» caricato con {len(data['aree'])} aree!")
+                            st.session_state.risultati = data["risultati"] or []
+                            if data["prev"]: st.session_state.prev = data["prev"]
+                            st.success(f"✅ Caricato: {len(data['aree'])} aree")
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Errore caricamento: {e}")
-            with col_l2:
+                        st.error(f"Errore: {e}")
+            with cl2:
                 if st.button("🗑️ ELIMINA", type="secondary"):
                     try:
-                        pid = proj_options[proj_sel]
-                        delete_project(pid)
-                        st.success("Progetto eliminato.")
-                        st.rerun()
+                        delete_project(proj_opts[proj_sel])
+                        st.success("Eliminato."); st.rerun()
                     except Exception as e:
-                        st.error(f"Errore eliminazione: {e}")
-
+                        st.error(f"Errore: {e}")
     st.markdown("---")
-    st.markdown("#### 📋 Tutti i tuoi progetti")
-    progetti_refresh = load_projects_list(st.session_state.username)
-    if progetti_refresh:
-        df_proj = pd.DataFrame(progetti_refresh, columns=["ID","Nome","Committente","Ultima modifica"])
-        df_proj["Ultima modifica"] = df_proj["Ultima modifica"].str[:16].str.replace("T"," ")
-        st.dataframe(df_proj.drop(columns=["ID"]), use_container_width=True, hide_index=True)
+    st.markdown("#### 📋 I tuoi progetti")
+    rows_p = load_projects_list(st.session_state.username)
+    if rows_p:
+        df_p = pd.DataFrame(rows_p, columns=["ID","Nome","Committente","Ultima modifica"])
+        df_p["Ultima modifica"] = df_p["Ultima modifica"].str[:16].str.replace("T"," ")
+        st.dataframe(df_p.drop(columns=["ID"]), use_container_width=True, hide_index=True)
     else:
         st.info("Nessun progetto nel database.")
 
