@@ -1,5 +1,5 @@
 # ============================================================
-# LIGHTING AGENT PRO v4.0
+# LuxIA
 # UNI EN 12464-1:2021 | UNI EN 12464-2:2025 | UNI EN 1838:2025
 # UNI 11630:2016 | UNI 11248:2016 | UNI CEI 11222
 # ============================================================
@@ -44,7 +44,7 @@ except ImportError:
 # CONFIGURAZIONE PAGINA
 # ============================================================
 st.set_page_config(
-    page_title="Lighting Agent Pro v4.0",
+    page_title="LuxIA",
     page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1013,7 +1013,7 @@ with st.sidebar:
     st.markdown(
         "<div style='background:#1a365d;padding:1rem;border-radius:8px;"
         "color:white;text-align:center;margin-bottom:1rem'>"
-        "<b>💡 Lighting Agent Pro v4.0</b><br>"
+        "<b>💡 LuxIA</b><br>"
         "<small>UNI EN 12464-1:2021</small></div>",
         unsafe_allow_html=True
     )
