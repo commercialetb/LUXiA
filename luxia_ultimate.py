@@ -1282,6 +1282,361 @@ with tab3:
                 with st.spinner("Generazione Tavola A3..."):
                     prog = {"nome":nome
 
+        with c1:
+            if st.button("📄 GENERA TAVOLA A3 PDF", type="primary"):
+                with st.spinner("Generazione Tavola A3..."):
+                    prog = {
+                        "nome": nome_prog, "committente": committente,
+                        "progettista": progettista,
+                        "data": datetime.now().strftime("%d/%m/%Y"),
+                        "num_tavola": num_tav,
+                    }
+                    logo = st.session_state.get("logo_bytes", None)
+                    buf = genera_pdf(prog, st.session_state.risultati, logo)
+                    st.download_button("⬇️ Scarica Tavola A3 PDF", data=buf,
+                        file_name=f"{num_tav}_tavola.pdf", mime="application/pdf")
+                    st.success("✅ Tavola A3 generata!")
+        with c2:
+            if st.button("📐 GENERA DXF AUTOCAD"):
+                with st.spinner("Generazione DXF..."):
+                    dxf = genera_dxf(st.session_state.risultati)
+                    st.download_button("⬇️ Scarica DXF", data=dxf,
+                        file_name=f"{num_tav}_layout.dxf", mime="application/dxf")
+                    st.success("✅ DXF generato!")
+
+# ============================================================
+# TAB 4 — VERIFICHE
+# ============================================================
+with tab4:
+    st.subheader("Verifiche Illuminotecniche")
+    if "risultati" not in st.session_state:
+        st.warning("Esegui prima i calcoli.")
+    else:
+        for r in st.session_state.risultati:
+            req = REQUISITI[r["tipo_locale"]]
+            em_label = " 🚨 EMERGENZA" if r["calc"].get("modalita") == "emergenza" else ""
+            badge = {"INT":"🟢","EXT":"🟡","EM":"🔴","STR":"🔵"}.get(req["area"],"⚪")
+            with st.expander(
+                f"{badge} {r['nome']}{em_label} | "
+                f"{r['calc']['E_m']} lux | "
+                f"{r['calc']['ok_lux']} Lux | {r['calc']['ok_ugr']} UGR | "
+                f"{req['norma']}"
+            ):
+                ca, cb, cc, cd = st.columns(4)
+                ca.metric("Lux ottenuto", str(r["calc"]["E_m"]))
+                cb.metric("Potenza W",    str(r["calc"]["W_t"]))
+                cc.metric("W/m²",         str(r["calc"]["wm2"]))
+                cd.metric("Lampade",      str(r["calc"]["n"]))
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.success(f"Illuminamento {r['calc']['ok_lux']}")
+                c2.success(f"UGR {r['calc']['ok_ugr']}")
+                c3.success(f"Uniformità {r['calc']['ok_uni']}")
+                c4.success(f"Ra {r['calc']['ok_ra']}")
+
+                if r["calc"].get("modalita") == "emergenza":
+                    st.info(
+                        "🚨 **Emergenza UNI EN 1838:2025** — "
+                        f"Illuminamento minimo richiesto: {r['calc']['E_t']} lux | "
+                        "Autonomia: ≥ 1h | Test: mensile (funzionale) + annuale (durata)"
+                    )
+
+        st.markdown("---")
+        if st.button("📋 GENERA REPORT VERIFICHE PDF", type="primary"):
+            with st.spinner("Generazione report..."):
+                prog = {
+                    "nome": nome_prog, "committente": committente,
+                    "progettista": progettista,
+                    "data": datetime.now().strftime("%d/%m/%Y"),
+                    "num_tavola": num_tav,
+                }
+                logo = st.session_state.get("logo_bytes", None)
+                buf = genera_pdf(prog, st.session_state.risultati, logo)
+                st.download_button("⬇️ Scarica Report Verifiche PDF", data=buf,
+                    file_name=f"{num_tav}_verifiche.pdf", mime="application/pdf")
+
+# ============================================================
+# TAB 5 — RENDERING 3D
+# ============================================================
+with tab5:
+    st.subheader("Rendering 3D")
+    if "risultati" not in st.session_state:
+        st.warning("Esegui prima i calcoli.")
+    else:
+        names = [r["nome"] for r in st.session_state.risultati]
+        scelta = st.selectbox("Seleziona area da renderizzare", names)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            render_singolo = st.button("🎨 RENDERING AREA SELEZIONATA", type="primary")
+        with c2:
+            render_tutti = st.button("🎨 RENDERING TUTTE LE AREE")
+        with c3:
+            export_gltf = st.button("📦 ESPORTA SCENA glTF (Blender/Unreal)")
+
+        if render_singolo:
+            idx = names.index(scelta)
+            r = st.session_state.risultati[idx]
+            with st.spinner(f"Rendering {scelta}..."):
+                buf = genera_rendering(r, r["calc"])
+                st.image(buf, caption=f"Rendering 3D — {scelta}", use_column_width=True)
+                buf.seek(0)
+                st.download_button("⬇️ Scarica PNG", data=buf,
+                    file_name=f"render_{scelta.lower().replace(' ','_')}.png",
+                    mime="image/png")
+
+        if render_tutti:
+            cols = st.columns(2)
+            for i, r in enumerate(st.session_state.risultati):
+                with st.spinner(f"Rendering {r['nome']}..."):
+                    buf = genera_rendering(r, r["calc"])
+                    with cols[i % 2]:
+                        st.image(buf, caption=r["nome"], use_column_width=True)
+                        buf.seek(0)
+                        st.download_button(
+                            f"⬇️ Scarica {r['nome']}", data=buf,
+                            file_name=f"render_{i}.png", mime="image/png",
+                            key=f"rend_dl_{i}")
+
+        if export_gltf:
+            with st.spinner("Generazione scena glTF..."):
+                gltf_buf = export_gltf_scene(st.session_state.risultati)
+                st.download_button("⬇️ Scarica .glTF", data=gltf_buf,
+                    file_name=f"{num_tav}_scene.gltf", mime="model/gltf+json")
+                st.success("✅ Scena glTF pronta per Blender/Unreal Engine!")
+                st.info(
+                    "**Come usare in Blender:**\n"
+                    "1. File → Import → glTF 2.0\n"
+                    "2. Assegna materiali PBR alle mesh\n"
+                    "3. Render → Cycles → 256 samples\n"
+                    "4. Output → PNG 4K"
+                )
+
+        st.markdown("---")
+        st.markdown("#### 📝 Script Blender fotorealistico")
+        with st.expander("Mostra script `render_blender.py`"):
+            st.code('''
+import bpy, os
+
+gltf_path   = "/path/al/tuo_scene.gltf"
+output_path = "/path/output/render_fotorealistico.png"
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath=gltf_path)
+
+# Luce HDRI
+world = bpy.context.scene.world
+world.use_nodes = True
+bg = world.node_tree.nodes["Background"]
+bg.inputs[1].default_value = 0.3
+
+# Luci area (ogni lampada della scena)
+for obj in bpy.context.scene.objects:
+    if "Lamp_" in obj.name:
+        light_data = bpy.data.lights.new(name=obj.name+"_light", type="AREA")
+        light_data.energy = 1200
+        light_data.color  = (1.0, 0.95, 0.8)   # 3000K warm
+        light_data.size   = 0.17
+        light_obj = bpy.data.objects.new(obj.name+"_light", light_data)
+        light_obj.location = obj.location
+        bpy.context.collection.objects.link(light_obj)
+
+# Pavimento materiale PBR
+for obj in bpy.context.scene.objects:
+    if obj.type == "MESH":
+        mat = bpy.data.materials.new(name="PBR_Floor")
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes["Principled BSDF"]
+        bsdf.inputs["Base Color"].default_value  = (0.22,0.22,0.24,1)
+        bsdf.inputs["Roughness"].default_value   = 0.7
+        bsdf.inputs["Metallic"].default_value    = 0.0
+        obj.data.materials.append(mat)
+
+# Camera
+cam_data = bpy.data.cameras.new("Camera")
+cam_obj  = bpy.data.objects.new("Camera", cam_data)
+bpy.context.collection.objects.link(cam_obj)
+bpy.context.scene.camera = cam_obj
+cam_obj.location       = (8, -10, 5)
+cam_obj.rotation_euler = (1.1, 0, 0.8)
+
+# Render Cycles
+scene = bpy.context.scene
+scene.render.engine          = "CYCLES"
+scene.cycles.samples         = 512
+scene.cycles.use_denoising   = True
+scene.render.resolution_x    = 1920
+scene.render.resolution_y    = 1080
+scene.render.filepath        = output_path
+scene.render.image_settings.file_format = "PNG"
+
+bpy.ops.render.render(write_still=True)
+print("✅ Render completato:", output_path)
+''', language="python")
+            st.caption("Lancia con: `blender --background --python render_blender.py`")
+
+# ============================================================
+# TAB 6 — PREVENTIVO
+# ============================================================
+with tab6:
+    st.subheader("Preventivo Economico")
+    if "risultati" not in st.session_state:
+        st.warning("Esegui prima i calcoli.")
+    else:
+        st.markdown("#### ⚙️ Parametri preventivo (modificabili)")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: mg_sl  = st.slider("Margine %",       10, 60, 35, key="sl_mg")
+        with c2: iva_sl = st.slider("IVA %",            0, 22, 22, key="sl_iva")
+        with c3: sg_sl  = st.slider("Spese generali %", 5, 25, 12, key="sl_sg")
+        with c4: os_sl  = st.slider("Oneri sicurezza %",2, 10,  4, key="sl_os")
+
+        if st.button("🧮 CALCOLA PREVENTIVO", type="primary"):
+            st.session_state.prev = calc_preventivo(
+                st.session_state.risultati, mg_sl, sg_sl, os_sl, iva_sl)
+
+        if "prev" in st.session_state:
+            pv = st.session_state.prev
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Materiali",           f"EUR {pv['tm']:,.0f}")
+            c2.metric("Installazione",        f"EUR {pv['ti']:,.0f}")
+            c3.metric("Offerta cliente",      f"EUR {pv['to']:,.0f}")
+            c4.metric("Totale IVA inclusa",   f"EUR {pv['tf']:,.0f}")
+
+            st.markdown("#### 📋 Dettaglio per area")
+            df_p = pd.DataFrame([{
+                "Area":         r["area"],
+                "N lampade":    r["n"],
+                "Apparecchio":  r["lampada"],
+                "Modalità":     r["modalita"],
+                "Materiali":    f"EUR {r['mat']:,.0f}",
+                "Installazione":f"EUR {r['ins']:,.0f}",
+                "Subtotale":    f"EUR {r['sub']:,.0f}",
+            } for r in pv["righe"]])
+            st.dataframe(df_p, use_container_width=True, hide_index=True)
+
+            st.markdown("#### 💶 Riepilogo economico")
+            st.markdown(f"""
+| Voce | Importo |
+|---|---|
+| Materiali | EUR {pv['tm']:,.0f} |
+| Installazione | EUR {pv['ti']:,.0f} |
+| Totale lavori netto | EUR {pv['tn']:,.0f} |
+| Spese generali {sg_sl}% | EUR {pv['sg']:,.0f} |
+| Oneri sicurezza {os_sl}% | EUR {pv['os']:,.0f} |
+| Margine {mg_sl}% | EUR {pv['mg']:,.0f} |
+| **OFFERTA CLIENTE** | **EUR {pv['to']:,.0f}** |
+| IVA {iva_sl}% | EUR {pv['iva']:,.0f} |
+| **TOTALE IVA INCLUSA** | **EUR {pv['tf']:,.0f}** |
+""")
+            txt_prev = (
+                f"PREVENTIVO — {nome_prog}\n"
+                f"Committente: {committente}\n"
+                f"Data: {datetime.now():%d/%m/%Y}\n"
+                f"Progettista: {progettista}\n\n"
+                + "\n".join(
+                    f"  {r['area']}: {r['n']}x {r['lampada']}  "
+                    f"Mat. EUR {r['mat']:,.0f}  Ins. EUR {r['ins']:,.0f}"
+                    for r in pv["righe"]
+                )
+                + f"\n\nTOTALE IVA INCLUSA: EUR {pv['tf']:,.0f}\n"
+            )
+            st.download_button("⬇️ Scarica Preventivo TXT", data=txt_prev.encode(),
+                file_name=f"preventivo_{datetime.now():%Y%m%d}.txt")
+
+# ============================================================
+# TAB 7 — RELAZIONE COMPLETA
+# ============================================================
+with tab7:
+    st.subheader("Relazione Tecnica Completa — UNI 11630:2016")
+    if "risultati" not in st.session_state:
+        st.warning("Esegui prima i calcoli.")
+    elif "prev" not in st.session_state:
+        st.warning("Calcola prima il preventivo nel tab 💶 Preventivo.")
+    else:
+        st.markdown("""
+La relazione completa include in un **unico PDF**:
+- 📋 Frontespizio con logo e dati progetto
+- 📝 Relazione descrittiva (UNI 11630:2016)
+- 📐 Tavola A3 planimetria + posizionamento
+- ✅ Schede di verifica per ogni area
+- 🎨 Rendering 3D di ogni area
+- 💶 Preventivo economico dettagliato
+""")
+
+        mg_r  = st.session_state.get("sl_mg",  35)
+        sg_r  = st.session_state.get("sl_sg",  12)
+        os_r  = st.session_state.get("sl_os",   4)
+        iva_r = st.session_state.get("sl_iva",  22)
+
+        if st.button("📄 GENERA RELAZIONE COMPLETA PDF", type="primary"):
+            with st.spinner("Generazione relazione completa in corso... (può richiedere 1-2 minuti)"):
+                prog = {
+                    "nome": nome_prog, "committente": committente,
+                    "progettista": progettista,
+                    "data": datetime.now().strftime("%d/%m/%Y"),
+                    "num_tavola": num_tav,
+                }
+                logo = st.session_state.get("logo_bytes", None)
+                try:
+                    buf = genera_relazione_completa(
+                        prog, st.session_state.risultati,
+                        st.session_state.prev, logo,
+                        mg_pct=mg_r, sg_pct=sg_r,
+                        os_pct=os_r, iva_pct=iva_r,
+                    )
+                    st.download_button(
+                        "⬇️ SCARICA RELAZIONE COMPLETA PDF",
+                        data=buf,
+                        file_name=f"{num_tav}_relazione_completa_{datetime.now():%Y%m%d}.pdf",
+                        mime="application/pdf",
+                    )
+                    st.success("✅ Relazione completa generata!")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"Errore generazione: {e}")
+                    st.info("Prova a installare PyPDF2: pip install PyPDF2")
+
+        st.markdown("---")
+        st.markdown("#### 📎 Export separati")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("📐 Solo Tavola A3"):
+                prog = {"nome":nome_prog,"committente":committente,
+                        "progettista":progettista,
+                        "data":datetime.now().strftime("%d/%m/%Y"),"num_tavola":num_tav}
+                buf = genera_pdf(prog, st.session_state.risultati,
+                                 st.session_state.get("logo_bytes"))
+                st.download_button("⬇️ Tavola A3", data=buf,
+                    file_name=f"{num_tav}_tavola.pdf", mime="application/pdf",
+                    key="dl_tav_r7")
+        with c2:
+            if st.button("📦 Solo glTF Blender"):
+                gltf_buf = export_gltf_scene(st.session_state.risultati)
+                st.download_button("⬇️ Scena .glTF", data=gltf_buf,
+                    file_name=f"{num_tav}_scene.gltf", mime="model/gltf+json",
+                    key="dl_gltf_r7")
+        with c3:
+            if "prev" in st.session_state:
+                pv2 = st.session_state.prev
+                txt2 = (f"PREVENTIVO — {nome_prog}\n"
+                        f"Data: {datetime.now():%d/%m/%Y}\n\n"
+                        + "\n".join(f"  {r['area']}: EUR {r['sub']:,.0f}"
+                                    for r in pv2["righe"])
+                        + f"\n\nTOTALE: EUR {pv2['tf']:,.0f}\n")
+                st.download_button("⬇️ Preventivo TXT", data=txt2.encode(),
+                    file_name=f"prev_{datetime.now():%Y%m%d}.txt",
+                    key="dl_prev_r7")
+
+# ============================================================
+# FOOTER
+# ============================================================
+st.markdown("---")
+st.caption(
+    "💡 **Lighting Agent Pro v3.0** | "
+    "UNI 11630:2016 · UNI EN 12464-1:2021 · UNI EN 12464-2:2025 · "
+    "UNI 11248:2016 · UNI EN 1838:2025 · UNI CEI 11222 | "
+    f"Utente: {st.session_state.username} | {datetime.now():%d/%m/%Y %H:%M}"
+)
 
 
 
