@@ -1092,56 +1092,58 @@ with tab1:
             else:
                 st.error("Inserisci il nome area.")
 
-    # --- DISEGNO SU PLANIMETRIA ---
-    st.markdown("---")
-    st.markdown("#### 🖊️ Disegna aree sulla planimetria")
-    if "plan_bytes" in st.session_state and CANVAS_OK and PIL_OK:
-        from PIL import Image as PILImage
-        plan_img = PILImage.open(BytesIO(st.session_state.plan_bytes)).convert("RGB")
-        max_w = 900
-        if plan_img.width > max_w:
-            ratio = max_w / plan_img.width
-            plan_img = plan_img.resize((max_w, int(plan_img.height * ratio)))
+   # --- DISEGNO SU PLANIMETRIA (versione cloud-safe) ---
+st.markdown("---")
+st.markdown("#### 🖊️ Aggiungi aree dalla planimetria")
 
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 151, 255, 0.25)",
-            stroke_width=2, stroke_color="#00b4d8",
-            background_image=plan_img,
-            height=plan_img.height, width=plan_img.width,
-            drawing_mode="rect", key="canvas_plan",
-        )
+if "plan_bytes" in st.session_state:
+    st.image(
+        st.session_state.plan_bytes,
+        caption="Planimetria caricata — usa il form sopra per aggiungere le aree",
+        use_column_width=True,
+    )
+    st.info(
+        "💡 **Istruzioni**: osserva la planimetria e inserisci le aree "
+        "manualmente nel form qui sopra, indicando superficie e tipo locale."
+    )
 
-        if st.button("📥 Importa rettangoli come nuove aree"):
-            if canvas_result.json_data and canvas_result.json_data.get("objects"):
-                n_imp = 0
-                for obj in canvas_result.json_data["objects"]:
-                    if obj.get("type") == "rect":
-                        w_px = obj.get("width",100)
-                        h_px = obj.get("height",100)
-                        area_m2 = round((w_px * scala_mpp/100) * (h_px * scala_mpp/100), 1)
-                        area_m2 = max(5.0, area_m2)
-                        st.session_state.aree.append({
-                            "nome":        f"Area_{len(st.session_state.aree)+1}",
-                            "tipo_locale": "Ufficio VDT",
-                            "superficie_m2": area_m2,
-                            "altezza_m":   2.70,
-                            "lampada":     list(DB_LAMPADE.keys())[0],
-                            "sup":         area_m2,
-                            "emergenza":   False,
-                            "polygon_px":  [
-                                [obj["left"], obj["top"]],
-                                [obj["left"]+w_px, obj["top"]],
-                                [obj["left"]+w_px, obj["top"]+h_px],
-                                [obj["left"], obj["top"]+h_px],
-                            ],
-                        }); n_imp += 1
-                st.success(f"✅ {n_imp} aree importate dal disegno.")
+    # Aggiungi area da coordinate manuali
+    st.markdown("##### Inserisci coordinate area (opzionale)")
+    with st.form("form_coords", clear_on_submit=True):
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1: cx = st.number_input("X origine [m]", 0.0, 500.0, 0.0, 0.5)
+        with cc2: cy = st.number_input("Y origine [m]", 0.0, 500.0, 0.0, 0.5)
+        with cc3: cw = st.number_input("Larghezza [m]", 1.0, 100.0, 5.0, 0.5)
+        with cc4: ch = st.number_input("Profondità [m]", 1.0, 100.0, 4.0, 0.5)
+
+        nome_coord  = st.text_input("Nome area", placeholder="es. Ufficio B")
+        tipo_coord  = st.selectbox("Tipo locale", list(REQUISITI.keys()), key="tc_coord")
+        lamp_coord  = st.selectbox("Apparecchio", list(DB_LAMPADE.keys()), key="lc_coord")
+        alt_coord   = st.number_input("Altezza [m]", 2.0, 12.0, 2.70, 0.05, key="ac_coord")
+        em_coord    = st.checkbox("🚨 Calcola emergenza", key="ec_coord")
+
+        if st.form_submit_button("➕ Aggiungi area da coordinate"):
+            if nome_coord.strip():
+                area_m2 = round(cw * ch, 1)
+                st.session_state.aree.append({
+                    "nome":          nome_coord.strip(),
+                    "tipo_locale":   tipo_coord,
+                    "superficie_m2": area_m2,
+                    "altezza_m":     alt_coord,
+                    "lampada":       lamp_coord,
+                    "sup":           area_m2,
+                    "emergenza":     em_coord,
+                    "polygon_px":    [
+                        [cx, cy], [cx+cw, cy],
+                        [cx+cw, cy+ch], [cx, cy+ch]
+                    ],
+                })
+                st.success(f"✅ Area «{nome_coord}» {area_m2}m² aggiunta!")
             else:
-                st.info("Disegna prima almeno un rettangolo sulla planimetria.")
-    elif not CANVAS_OK:
-        st.warning("Installa `streamlit-drawable-canvas` per disegnare le aree.")
-    else:
-        st.info("Carica una planimetria nel menu laterale per disegnare le aree.")
+                st.error("Inserisci il nome area.")
+else:
+    st.info("Carica una planimetria nel menu laterale per visualizzarla.")
+
 
     # --- AI VISION ---
     st.markdown("---")
