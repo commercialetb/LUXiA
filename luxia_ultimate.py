@@ -1277,11 +1277,7 @@ with tab3:
         st.warning("Esegui prima i calcoli.")
     else:
         c1, c2 = st.columns(2)
-        with c1:
-            if st.button("📄 GENERA TAVOLA A3 PDF", type="primary"):
-                with st.spinner("Generazione Tavola A3..."):
-                    prog = {"nome":nome
-
+       
         with c1:
             if st.button("📄 GENERA TAVOLA A3 PDF", type="primary"):
                 with st.spinner("Generazione Tavola A3..."):
