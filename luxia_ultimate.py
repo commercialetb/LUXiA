@@ -1,5 +1,5 @@
 # ============================================================
-# LIGHTING AGENT PRO v4.0
+# LIGHTING AGENT PRO v3.0
 # UNI EN 12464-1:2021 | UNI EN 12464-2 | UNI EN 1838:2025
 # UNI 11630:2016 | UNI 11248:2016 | UNI CEI 11222
 # ============================================================
@@ -39,7 +39,7 @@ except ImportError:
 # CONFIGURAZIONE PAGINA
 # ============================================================
 st.set_page_config(
-    page_title="Lighting Agent Pro v4.0",
+    page_title="Lighting Agent Pro v3.0",
     page_icon="💡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -92,32 +92,31 @@ def init_db():
         risultati_json TEXT,
         prev_json TEXT
     )""")
-    # Crea admin di default se non esiste
     admin_hash = hashlib.sha256("admin2026".encode()).hexdigest()
     con.execute("INSERT OR IGNORE INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
-                ("admin", "admin@luxia.it", admin_hash, datetime.now().isoformat()))
+                ("admin","admin@luxia.it",admin_hash,datetime.now().isoformat()))
     demo_hash = hashlib.sha256("demo123".encode()).hexdigest()
     con.execute("INSERT OR IGNORE INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
-                ("demo", "demo@luxia.it", demo_hash, datetime.now().isoformat()))
+                ("demo","demo@luxia.it",demo_hash,datetime.now().isoformat()))
     con.commit()
     con.close()
 
-def hash_password(pwd: str) -> str:
+def hash_password(pwd):
     return hashlib.sha256(pwd.encode()).hexdigest()
 
-def check_user(username: str, password: str) -> bool:
+def check_user(username, password):
     con = sqlite3.connect(DB_PATH)
     row = con.execute("SELECT password_hash FROM users WHERE username=?", (username,)).fetchone()
     con.close()
     return row is not None and row[0] == hash_password(password)
 
-def user_exists(username: str) -> bool:
+def user_exists(username):
     con = sqlite3.connect(DB_PATH)
     row = con.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     con.close()
     return row is not None
 
-def register_user(username: str, email: str, password: str):
+def register_user(username, email, password):
     con = sqlite3.connect(DB_PATH)
     con.execute("INSERT INTO users (username,email,password_hash,created_at) VALUES (?,?,?,?)",
                 (username, email, hash_password(password), datetime.now().isoformat()))
@@ -127,7 +126,6 @@ def register_user(username: str, email: str, password: str):
 def save_project(username, nome, committente, progettista, num_tav, aree, risultati, prev):
     con = sqlite3.connect(DB_PATH)
     now = datetime.now().isoformat()
-    # Converti risultati rimuovendo oggetti non serializzabili
     ris_clean = []
     for r in risultati:
         rc = {k: v for k, v in r.items() if k != "calc"}
@@ -158,7 +156,7 @@ def save_project(username, nome, committente, progettista, num_tav, aree, risult
     con.commit()
     con.close()
 
-def load_projects_list(username: str):
+def load_projects_list(username):
     con = sqlite3.connect(DB_PATH)
     rows = con.execute(
         "SELECT id, nome_progetto, committente, data_modifica FROM projects WHERE username=? ORDER BY data_modifica DESC",
@@ -166,7 +164,7 @@ def load_projects_list(username: str):
     con.close()
     return rows
 
-def load_project_data(project_id: int):
+def load_project_data(project_id):
     con = sqlite3.connect(DB_PATH)
     row = con.execute(
         "SELECT nome_progetto,committente,progettista,num_tavola,aree_json,risultati_json,prev_json FROM projects WHERE id=?",
@@ -176,13 +174,13 @@ def load_project_data(project_id: int):
         return {
             "nome": row[0], "committente": row[1], "progettista": row[2],
             "num_tavola": row[3],
-            "aree": json.loads(row[4]) if row[4] else [],
+            "aree":      json.loads(row[4]) if row[4] else [],
             "risultati": json.loads(row[5]) if row[5] else [],
-            "prev": json.loads(row[6]) if row[6] else {},
+            "prev":      json.loads(row[6]) if row[6] else {},
         }
     return None
 
-def delete_project(project_id: int):
+def delete_project(project_id):
     con = sqlite3.connect(DB_PATH)
     con.execute("DELETE FROM projects WHERE id=?", (project_id,))
     con.commit()
@@ -193,34 +191,28 @@ init_db()
 # ============================================================
 # AI VISION — RICONOSCIMENTO AREE (Groq → Gemini → Ollama)
 # ============================================================
-def analizza_planimetria_ai(image_bytes: bytes, groq_key: str = "", gemini_key: str = "") -> list:
+def analizza_planimetria_ai(image_bytes, groq_key="", gemini_key=""):
     if not REQ_OK:
         return []
     b64 = base64.b64encode(image_bytes).decode()
     prompt = (
         "Analizza questa planimetria architettonica. "
-        "Per ogni stanza/ambiente visibile restituisci SOLO JSON valido, nient'altro:\n"
+        "Per ogni stanza/ambiente visibile restituisci SOLO JSON valido:\n"
         '{"areas": [{"name": "Nome stanza", "type": "Ufficio VDT", "area_m2": 30.0}]}\n'
         "Tipi validi: Ufficio VDT, Corridoio, Bagno/WC, Sala riunioni, Archivio, "
         "Ingresso, Mensa/Ristoro, Locale tecnico, Reception, Laboratorio."
     )
-
-    # 1️⃣ Groq — llama-3.2-11b-vision (gratuito, velocissimo)
     if groq_key:
         try:
             resp = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "llama-3.2-11b-vision-preview",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": f"image/jpeg;base64,{b64}"}},
-                        {"type": "text", "text": prompt}
-                    ]}],
-                    "max_tokens": 1024,
-                    "temperature": 0.1,
-                }, timeout=30
-            )
+                headers={"Authorization": f"Bearer {groq_key}","Content-Type":"application/json"},
+                json={"model":"llama-3.2-11b-vision-preview",
+                      "messages":[{"role":"user","content":[
+                          {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},
+                          {"type":"text","text":prompt}
+                      ]}],"max_tokens":1024,"temperature":0.1},
+                timeout=30)
             testo = resp.json()["choices"][0]["message"]["content"]
             match = re.search(r'\{.*\}', testo, re.DOTALL)
             if match:
@@ -228,19 +220,15 @@ def analizza_planimetria_ai(image_bytes: bytes, groq_key: str = "", gemini_key: 
                 if data.get("areas"):
                     return data["areas"]
         except Exception as e:
-            st.warning(f"⚠️ Groq non disponibile: {e}")
-
-    # 2️⃣ Google Gemini Flash (gratuito)
+            st.warning(f"Groq: {e}")
     if gemini_key:
         try:
             resp = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_key}",
-                json={"contents": [{"parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                    {"text": prompt}
-                ]}]},
-                timeout=30
-            )
+                json={"contents":[{"parts":[
+                    {"inline_data":{"mime_type":"image/jpeg","data":b64}},
+                    {"text":prompt}
+                ]}]},timeout=30)
             testo = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
             match = re.search(r'\{.*\}', testo, re.DOTALL)
             if match:
@@ -248,63 +236,38 @@ def analizza_planimetria_ai(image_bytes: bytes, groq_key: str = "", gemini_key: 
                 if data.get("areas"):
                     return data["areas"]
         except Exception as e:
-            st.warning(f"⚠️ Gemini non disponibile: {e}")
-
-    # 3️⃣ Ollama locale (llava — offline, illimitato)
+            st.warning(f"Gemini: {e}")
     try:
-        resp = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": "llava", "stream": False, "prompt": prompt, "images": [b64]},
-            timeout=120
-        )
-        testo = resp.json().get("response", "")
+        resp = requests.post("http://localhost:11434/api/generate",
+            json={"model":"llava","stream":False,"prompt":prompt,"images":[b64]},
+            timeout=120)
+        testo = resp.json().get("response","")
         match = re.search(r'\{.*\}', testo, re.DOTALL)
         if match:
             data = json.loads(match.group())
             if data.get("areas"):
                 return data["areas"]
     except Exception as e:
-        st.warning(f"⚠️ Ollama non disponibile: {e}")
-
+        st.warning(f"Ollama: {e}")
     return []
 
-# ============================================================
-# AI — SCALA AUTOMATICA DA TESTO PLANIMETRIA
-# ============================================================
-def detect_scala_ocr(image_bytes: bytes) -> str | None:
-    """Tenta di rilevare la scala dalla planimetria tramite pattern testuale."""
-    if not PIL_OK:
-        return None
-    try:
-        import io
-        img = PILImage.open(io.BytesIO(image_bytes)).convert("L")
-        # Senza easyocr disponibile, cerca con Groq/Gemini nella funzione AI
-        return None
-    except Exception:
-        return None
-
-def detect_scala_ai(image_bytes: bytes, groq_key: str = "", gemini_key: str = "") -> str | None:
-    """Chiede all'AI di leggere la scala dalla planimetria."""
+def detect_scala_ai(image_bytes, groq_key="", gemini_key=""):
     if not REQ_OK:
-        return None
+        return ""
     b64 = base64.b64encode(image_bytes).decode()
-    prompt = (
-        "Guarda questa planimetria architettonica. "
-        "C'è indicata una scala (es. 1:50, 1:100, 1:200)? "
-        "Rispondi SOLO con il numero dopo i due punti (es. 100) oppure 'non trovata'."
-    )
+    prompt = ("Guarda questa planimetria. C'e' indicata una scala tipo 1:50, 1:100, 1:200? "
+              "Rispondi SOLO con il numero dopo i due punti (es. 100) oppure non trovata.")
     if groq_key:
         try:
             resp = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}"},
-                json={"model": "llama-3.2-11b-vision-preview",
-                      "messages": [{"role": "user", "content": [
-                          {"type": "image_url", "image_url": {"url": f"image/jpeg;base64,{b64}"}},
-                          {"type": "text", "text": prompt}
-                      ]}], "max_tokens": 50, "temperature": 0.0},
-                timeout=20
-            )
+                headers={"Authorization":f"Bearer {groq_key}"},
+                json={"model":"llama-3.2-11b-vision-preview",
+                      "messages":[{"role":"user","content":[
+                          {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}},
+                          {"type":"text","text":prompt}
+                      ]}],"max_tokens":50,"temperature":0.0},
+                timeout=20)
             testo = resp.json()["choices"][0]["message"]["content"].strip()
             m = re.search(r'\d+', testo)
             if m:
@@ -315,18 +278,17 @@ def detect_scala_ai(image_bytes: bytes, groq_key: str = "", gemini_key: str = ""
         try:
             resp = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={gemini_key}",
-                json={"contents": [{"parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                    {"text": prompt}
-                ]}]}, timeout=20
-            )
+                json={"contents":[{"parts":[
+                    {"inline_data":{"mime_type":"image/jpeg","data":b64}},
+                    {"text":prompt}
+                ]}]},timeout=20)
             testo = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             m = re.search(r'\d+', testo)
             if m:
                 return f"1:{m.group()}"
         except Exception:
             pass
-    return None
+    return ""
 
 # ============================================================
 # LOGIN / REGISTRAZIONE
@@ -342,11 +304,9 @@ if not st.session_state.logged_in:
     <h2 style="text-align:center;color:#1a365d">💡 Lighting Agent Pro</h2>
     <p style="text-align:center;color:#666">v4.0 — Accesso riservato</p>
     </div>""", unsafe_allow_html=True)
-
     col_a, col_b, col_c = st.columns([1, 2, 1])
     with col_b:
         tab_login, tab_reg = st.tabs(["🔐 Login", "📝 Registrati"])
-
         with tab_login:
             user_input = st.text_input("Username", key="li_user")
             pass_input = st.text_input("Password", type="password", key="li_pass")
@@ -357,10 +317,9 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else:
                     st.error("❌ Credenziali non valide")
-
         with tab_reg:
             new_user  = st.text_input("Username *", key="reg_user")
-            new_email = st.text_input("Email", key="reg_email")
+            new_email = st.text_input("Email",      key="reg_email")
             new_pass  = st.text_input("Password *", type="password", key="reg_pass")
             new_pass2 = st.text_input("Conferma password *", type="password", key="reg_pass2")
             if st.button("Registrati ✅", key="btn_reg"):
@@ -412,11 +371,13 @@ if "DB_LAMPADE" not in st.session_state:
             "efficienza":125,"ra":90,"temp_colore":"3000K","ugr":14,
             "prezzo":165,"installazione":35,"tipo":"Downlight","ip":"IP44",
             "dimmerabile":True,"classe_energ":"A+"},
+        # Emergenza
         "Gewiss GW Emergenza 200lm/3W": {
             "produttore":"Gewiss","flusso_lm":200,"potenza_W":3,
             "efficienza":66,"ra":80,"temp_colore":"4000K","ugr":28,
             "prezzo":85,"installazione":25,"tipo":"Emergenza","ip":"IP20",
             "dimmerabile":False,"classe_energ":"A"},
+        # Esterni
         "BEGA 77001 Proiettore Esterno 8000lm/60W": {
             "produttore":"BEGA","flusso_lm":8000,"potenza_W":60,
             "efficienza":133,"ra":80,"temp_colore":"4000K","ugr":55,
@@ -441,29 +402,30 @@ DB_LAMPADE = st.session_state.DB_LAMPADE
 # ============================================================
 REQUISITI = {
     # INTERNI — UNI EN 12464-1:2021
-    "Ufficio VDT":       {"lux":500,"ugr_max":19,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Reception":         {"lux":300,"ugr_max":22,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Corridoio":         {"lux":100,"ugr_max":28,"uni":0.40,"ra_min":40,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Sala riunioni":     {"lux":500,"ugr_max":19,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Archivio":          {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Bagno/WC":          {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Laboratorio":       {"lux":750,"ugr_max":16,"uni":0.70,"ra_min":90,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Ingresso":          {"lux":200,"ugr_max":22,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Mensa/Ristoro":     {"lux":200,"ugr_max":22,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
-    "Locale tecnico":    {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":60,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Ufficio VDT":        {"lux":500,"ugr_max":19,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Reception":          {"lux":300,"ugr_max":22,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Corridoio":          {"lux":100,"ugr_max":28,"uni":0.40,"ra_min":40,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Sala riunioni":      {"lux":500,"ugr_max":19,"uni":0.60,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Archivio":           {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Bagno/WC":           {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Laboratorio":        {"lux":750,"ugr_max":16,"uni":0.70,"ra_min":90,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Ingresso":           {"lux":200,"ugr_max":22,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Mensa/Ristoro":      {"lux":200,"ugr_max":22,"uni":0.40,"ra_min":80,"norma":"UNI EN 12464-1:2021","area":"INT"},
+    "Locale tecnico":     {"lux":200,"ugr_max":25,"uni":0.40,"ra_min":60,"norma":"UNI EN 12464-1:2021","area":"INT"},
     # Emergenza — UNI EN 1838:2025
-    "Via di esodo":      {"lux":1,  "ugr_max":35,"uni":0.10,"ra_min":40,"norma":"UNI EN 1838:2025","area":"EM"},
-    "Area antipanico":   {"lux":0.5,"ugr_max":35,"uni":0.10,"ra_min":40,"norma":"UNI EN 1838:2025","area":"EM"},
+    "Via di esodo":       {"lux":1,  "ugr_max":35,"uni":0.10,"ra_min":40,"norma":"UNI EN 1838:2025","area":"EM"},
+    "Area antipanico":    {"lux":0.5,"ugr_max":35,"uni":0.10,"ra_min":40,"norma":"UNI EN 1838:2025","area":"EM"},
     # ESTERNI — UNI EN 12464-2:2025
-    "Piazzale operativo":        {"lux":20,"ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
-    "Area carico/scarico":       {"lux":50,"ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
-    "Parcheggio esterno":        {"lux":10,"ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
-    "Percorso pedonale esterno": {"lux":5, "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
-    # STRADALE — UNI 11248:2016
-    "Strada veicolare ME3a":   {"lux":7.5,"ugr_max":55,"uni":0.40,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
-    "Strada residenziale CE2": {"lux":7.5,"ugr_max":55,"uni":0.40,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
-    "Zona pedonale S4":        {"lux":5,  "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
+    "Piazzale operativo":         {"lux":20, "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
+    "Area carico/scarico":        {"lux":50, "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
+    "Parcheggio esterno":         {"lux":10, "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
+    "Percorso pedonale esterno":  {"lux":5,  "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI EN 12464-2:2025","area":"EXT"},
+    # STRADALE — UNI 11248:2016 / UNI EN 13201
+    "Strada veicolare ME3a":      {"lux":7.5,"ugr_max":55,"uni":0.40,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
+    "Strada residenziale CE2":    {"lux":7.5,"ugr_max":55,"uni":0.40,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
+    "Zona pedonale S4":           {"lux":5,  "ugr_max":55,"uni":0.25,"ra_min":60,"norma":"UNI 11248:2016","area":"STR"},
 }
+
 
 # ============================================================
 # FUNZIONE CALCOLO ILLUMINOTECNICO
@@ -520,6 +482,7 @@ def calcola_area(area: dict, modalita: str = "normale") -> dict:
         "lampada_usata": next(k for k, v in DB_LAMPADE.items() if v == lamp),
     }
 
+
 # ============================================================
 # RENDERING 3D FOTOREALISTICO (Matplotlib)
 # ============================================================
@@ -544,20 +507,27 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
 
     is_em = calc.get("modalita") == "emergenza"
 
+    # Griglia pavimento
     Xg, Yg = np.meshgrid(np.linspace(0, lato, 12), np.linspace(0, lato, 12))
     Zg_base = np.zeros_like(Xg)
     ax.plot_wireframe(Xg, Yg, Zg_base, color="#2d3748", linewidth=0.4, alpha=0.5)
 
-    pav = Poly3DCollection([[(0,0,0),(lato,0,0),(lato,lato,0),(0,lato,0)]], alpha=1.0)
+    # Pavimento pieno
+    pav = Poly3DCollection(
+        [[(0,0,0),(lato,0,0),(lato,lato,0),(0,lato,0)]], alpha=1.0)
     pav.set_facecolor(mat_pav)
     pav.set_edgecolor("#4b5563")
     ax.add_collection3d(pav)
 
     if not is_ext:
-        soff = Poly3DCollection([[(0,0,alt),(lato,0,alt),(lato,lato,alt),(0,lato,alt)]], alpha=0.8)
+        # Soffitto
+        soff = Poly3DCollection(
+            [[(0,0,alt),(lato,0,alt),(lato,lato,alt),(0,lato,alt)]], alpha=0.8)
         soff.set_facecolor(mat_soff)
         soff.set_edgecolor("#9ca3af")
         ax.add_collection3d(soff)
+
+        # Pareti
         for wall in [
             [(0,0,0),(lato,0,0),(lato,0,alt),(0,0,alt)],
             [(0,lato,0),(lato,lato,0),(lato,lato,alt),(0,lato,alt)],
@@ -569,26 +539,33 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
             pw.set_edgecolor("#9ca3af")
             ax.add_collection3d(pw)
 
+    # Scrivanie + sedie (no esterni, no emergenza)
     if not is_ext and not is_em:
         n_rows = max(1, int(np.ceil(np.sqrt(len(coords)) / 2)))
         xs_desk = np.linspace(lato * 0.18, lato * 0.82, max(2, n_rows))
         ys_desk = np.linspace(lato * 0.18, lato * 0.82, max(2, n_rows))
         for xd in xs_desk:
             for yd in ys_desk:
+                # Piano scrivania
                 top = Poly3DCollection(
                     [[(xd-.65, yd-.38, 0.74),(xd+.65, yd-.38, 0.74),
                       (xd+.65, yd+.38, 0.74),(xd-.65, yd+.38, 0.74)]], alpha=1.0)
                 top.set_facecolor(mat_legno)
                 top.set_edgecolor("#1f2937")
                 ax.add_collection3d(top)
-                for gx, gy in [(xd-.55, yd-.28),(xd+.55, yd-.28),(xd+.55, yd+.28),(xd-.55, yd+.28)]:
-                    ax.plot([gx,gx],[gy,gy],[0,0.74], color="#6b7280", lw=1.5, alpha=0.9)
+                # Gambe
+                for gx, gy in [(xd-.55, yd-.28),(xd+.55, yd-.28),
+                                (xd+.55, yd+.28),(xd-.55, yd+.28)]:
+                    ax.plot([gx,gx],[gy,gy],[0,0.74],
+                            color="#6b7280", lw=1.5, alpha=0.9)
+                # Monitor
                 mon = Poly3DCollection(
                     [[(xd-.20, yd-.03, 0.74),(xd+.20, yd-.03, 0.74),
                       (xd+.20, yd-.03, 1.20),(xd-.20, yd-.03, 1.20)]], alpha=0.9)
                 mon.set_facecolor((0.08, 0.10, 0.14))
                 mon.set_edgecolor("#374151")
                 ax.add_collection3d(mon)
+                # Sedia (seduta + schienale)
                 sed = Poly3DCollection(
                     [[(xd-.28, yd+.40, 0),(xd+.28, yd+.40, 0),
                       (xd+.28, yd+.65, 0),(xd-.28, yd+.65, 0)]], alpha=1.0)
@@ -602,6 +579,7 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
                 sch.set_edgecolor("#0f172a")
                 ax.add_collection3d(sch)
 
+    # Reception / bancone (solo reception)
     if "reception" in area["tipo_locale"].lower():
         ban = Poly3DCollection(
             [[(lato*.20, lato*.45, 0),(lato*.80, lato*.45, 0),
@@ -610,26 +588,34 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
         ban.set_edgecolor("#292524")
         ax.add_collection3d(ban)
 
+    # Uscita emergenza
     if is_em:
         for ex_pos in [(0.02, lato/2), (lato-0.02, lato/2)]:
             ex = Poly3DCollection(
-                [[(ex_pos[0], ex_pos[1]-.5, 0.1),(ex_pos[0], ex_pos[1]+.5, 0.1),
-                  (ex_pos[0], ex_pos[1]+.5, 0.6),(ex_pos[0], ex_pos[1]-.5, 0.6)]], alpha=0.98)
+                [[(ex_pos[0], ex_pos[1]-.5, 0.1),
+                  (ex_pos[0], ex_pos[1]+.5, 0.1),
+                  (ex_pos[0], ex_pos[1]+.5, 0.6),
+                  (ex_pos[0], ex_pos[1]-.5, 0.6)]], alpha=0.98)
             ex.set_facecolor((0.1, 0.8, 0.1))
             ex.set_edgecolor("white")
             ax.add_collection3d(ex)
 
+    # Lampade e coni luce
     c_led = mat_emer if is_em else mat_led
     theta = np.linspace(0, 2 * np.pi, 20)
     for (lx, ly) in coords:
         h = alt - 0.05 if not is_ext else 6.0
-        ax.scatter([lx],[ly],[h], c=[c_led], s=300, edgecolors="white", lw=1.5, zorder=10)
+        ax.scatter([lx],[ly],[h], c=[c_led], s=300,
+                   edgecolors="white", lw=1.5, zorder=10)
         for rr, alp in [(0.6,0.16),(1.2,0.09),(2.0,0.05)]:
             for ang in theta[::2]:
-                ax.plot([lx, lx + rr*np.cos(ang)],[ly, ly + rr*np.sin(ang)],
+                ax.plot([lx, lx + rr*np.cos(ang)],
+                        [ly, ly + rr*np.sin(ang)],
                         [h, 0.04], color="#fef3c7", alpha=alp, lw=0.7)
 
-    Xh, Yh = np.meshgrid(np.linspace(0.1, lato-0.1, 50), np.linspace(0.1, lato-0.1, 50))
+    # Distribuzione lux pavimento (heatmap)
+    Xh, Yh = np.meshgrid(
+        np.linspace(0.1, lato-0.1, 50), np.linspace(0.1, lato-0.1, 50))
     Zh = np.zeros_like(Xh)
     h_lamp = alt if not is_ext else 6.0
     for (lx2, ly2) in coords:
@@ -637,9 +623,11 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
         Zh += (lamp["flusso_lm"]/(2*np.pi))*(h_lamp/d2**3)
     Zn = (Zh - Zh.min())/(Zh.max()-Zh.min()+1e-9)
     cmap_use = plt.cm.summer if is_em else plt.cm.inferno
-    ax.plot_surface(Xh, Yh, np.full_like(Xh, 0.02), facecolors=cmap_use(Zn), alpha=0.55, shade=False)
+    ax.plot_surface(Xh, Yh, np.full_like(Xh, 0.02),
+                    facecolors=cmap_use(Zn), alpha=0.55, shade=False)
 
-    ax.set_xlim(0, lato); ax.set_ylim(0, lato)
+    ax.set_xlim(0, lato)
+    ax.set_ylim(0, lato)
     ax.set_zlim(0, max(alt, 6.5) if is_ext else alt)
     ax.view_init(elev=30, azim=235)
     ax.axis("off")
@@ -657,6 +645,7 @@ def genera_rendering(area: dict, calc: dict) -> BytesIO:
     buf.seek(0)
     plt.close(fig)
     return buf
+
 
 # ============================================================
 # ISOLUX 2D
@@ -680,549 +669,526 @@ def genera_isolux(ax, coords, lamp, sup, alt):
     ax.set_xlim(0, lato); ax.set_ylim(0, lato)
     ax.set_aspect("equal"); ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]")
 
+
 # ============================================================
-# VIEWER 3D NAVIGABILE — Three.js + GLTFLoader inline
+# EXPORT GLTF
 # ============================================================
-def build_gltf_scene(risultati: list) -> dict:
-    """Costruisce il dizionario glTF completo con geometrie reali."""
-    meshes, accessors, bufferViews, buffer_data = [], [], [], bytearray()
-
-    def add_box(cx, cy, cz, w, d, h, color_hex):
-        """Aggiunge un box come mesh glTF."""
-        x0, y0, z0 = cx - w/2, cy - d/2, cz
-        x1, y1, z1 = cx + w/2, cy + d/2, cz + h
-        verts = [
-            x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y1,z0,  # bottom
-            x0,y0,z1, x1,y0,z1, x1,y1,z1, x0,y1,z1,  # top
-        ]
-        idxs = [
-            0,1,2, 0,2,3,  # bottom
-            4,5,6, 4,6,7,  # top
-            0,1,5, 0,5,4,  # front
-            2,3,7, 2,7,6,  # back
-            1,2,6, 1,6,5,  # right
-            3,0,4, 3,4,7,  # left
-        ]
-        import struct
-        vb = struct.pack(f"{len(verts)}f", *verts)
-        ib = struct.pack(f"{len(idxs)}H", *idxs)
-
-        offset_v = len(buffer_data)
-        buffer_data.extend(vb)
-        offset_i = len(buffer_data)
-        buffer_data.extend(ib)
-
-        bv_v = len(bufferViews)
-        bufferViews.append({"buffer":0,"byteOffset":offset_v,"byteLength":len(vb),"target":34962})
-        bv_i = len(bufferViews)
-        bufferViews.append({"buffer":0,"byteOffset":offset_i,"byteLength":len(ib),"target":34963})
-
-        acc_v = len(accessors)
-        verts_arr = [verts[i:i+3] for i in range(0, len(verts), 3)]
-        mn = [min(v[k] for v in verts_arr) for k in range(3)]
-        mx = [max(v[k] for v in verts_arr) for k in range(3)]
-        accessors.append({"bufferView":bv_v,"componentType":5126,"count":8,"type":"VEC3","min":mn,"max":mx})
-        acc_i = len(accessors)
-        accessors.append({"bufferView":bv_i,"componentType":5123,"count":len(idxs),"type":"SCALAR"})
-
-        r = int(color_hex[1:3],16)/255
-        g = int(color_hex[3:5],16)/255
-        b = int(color_hex[5:7],16)/255
-        mat_idx = len(meshes)  # riusa index
-        return {
-            "primitives":[{"attributes":{"POSITION":acc_v},"indices":acc_i,
-                           "material":mat_idx}]
-        }, {"pbrMetallicRoughness":{"baseColorFactor":[r,g,b,1.0],
-                                    "metallicFactor":0.1,"roughnessFactor":0.7}}
-
-    materials, mesh_list, node_list = [], [], []
-
-    for ridx, r in enumerate(risultati):
+def export_gltf_scene(risultati: list) -> BytesIO:
+    nodes = []
+    for r in risultati:
         lato = float(np.sqrt(r["sup"]))
         alt  = float(r.get("altezza_m", 2.70))
-        ox   = float(r.get("offset_x", 0.0))
-        is_em = r["calc"].get("modalita") == "emergenza"
-        is_ext = REQUISITI[r["tipo_locale"]]["area"] in ("EXT","STR")
-
-        # Pavimento
-        m, mat = add_box(ox+lato/2, lato/2, 0, lato, lato, 0.05, "#3d3d3d")
-        mesh_list.append(m); materials.append(mat)
-        node_list.append({"mesh": len(mesh_list)-1, "name": f"Floor_{r['nome']}"})
-
-        if not is_ext:
-            # Pareti (4)
-            wall_color = "#e8e8e8"
-            for wx, wy, ww, wd in [
-                (ox+lato/2, 0.025, lato, 0.05),
-                (ox+lato/2, lato-0.025, lato, 0.05),
-                (ox+0.025, lato/2, 0.05, lato),
-                (ox+lato-0.025, lato/2, 0.05, lato),
-            ]:
-                m, mat = add_box(wx, wy, 0, ww, wd, alt, wall_color)
-                mesh_list.append(m); materials.append(mat)
-                node_list.append({"mesh": len(mesh_list)-1})
-
-        # Lampade
-        lamp_color = "#22ff44" if is_em else "#fffde7"
+        nodes.append({"name": r["nome"],
+                      "translation": [float(r.get("offset_x",0)), 0.0, 0.0],
+                      "scale": [lato, lato, alt]})
         for (lx, ly) in r["calc"]["coords"]:
-            h_lamp = alt - 0.05 if not is_ext else 6.0
-            m, mat = add_box(ox+lx, ly, h_lamp, 0.3, 0.3, 0.08, lamp_color)
-            mesh_list.append(m); materials.append(mat)
-            node_list.append({"mesh": len(mesh_list)-1, "name": f"Lamp_{r['nome']}"})
-
+            nodes.append({"name": f"Lamp_{r['nome']}",
+                          "translation": [float(r.get("offset_x",0)+lx),
+                                          float(ly), alt-0.05]})
     gltf = {
-        "asset": {"version":"2.0","generator":"Lighting Agent Pro v4.0"},
+        "asset": {"version":"2.0","generator":"LightingAgentPro v3.0"},
         "scene": 0,
-        "scenes": [{"name":"LightingScene","nodes":list(range(len(node_list)))}],
-        "nodes": node_list,
-        "meshes": mesh_list,
-        "accessors": accessors,
-        "bufferViews": bufferViews,
-        "materials": materials,
-        "buffers": [{"byteLength": len(buffer_data)}],
+        "scenes": [{"nodes": list(range(len(nodes)))}],
+        "nodes": nodes,
+        "meshes": [{"name":"RoomBox","primitives":[]}],
     }
-    return gltf, bytes(buffer_data)
-
-
-def viewer_3d_navigabile(risultati: list, height: int = 600):
-    """Renderizza viewer Three.js navigabile direttamente in Streamlit."""
-    import json as _json
-
-    gltf_dict, bin_data = build_gltf_scene(risultati)
-
-    # Embedding del buffer binario come base64 URI nel glTF
-    b64_bin = base64.b64encode(bin_data).decode()
-    gltf_dict["buffers"][0]["uri"] = f"application/octet-stream;base64,{b64_bin}"
-    gltf_json = _json.dumps(gltf_dict)
-    gltf_b64  = base64.b64encode(gltf_json.encode()).decode()
-
-    html = f"""
-<!DOCTYPE html>
-<html style="margin:0;padding:0;background:#050816;">
-<body style="margin:0;padding:0;overflow:hidden;">
-<canvas id="c" style="width:100%;height:{height}px;display:block;"></canvas>
-<div id="info" style="position:absolute;top:10px;left:10px;color:#90cdf4;
-     font-family:monospace;font-size:12px;background:rgba(0,0,0,.6);
-     padding:8px 12px;border-radius:8px;pointer-events:none;">
-  💡 Lighting Agent Pro — Vista 3D<br>
-  🖱️ Trascina: ruota &nbsp;|&nbsp; Scroll: zoom &nbsp;|&nbsp; Tasto dx: pan
-</div>
-
-<script type="importmap">
-{{
-  "imports": {{
-    "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
-  }}
-}}
-</script>
-
-<script type="module">
-import * as THREE from 'three';
-import {{ OrbitControls }} from 'three/addons/controls/OrbitControls.js';
-import {{ GLTFLoader }}    from 'three/addons/loaders/GLTFLoader.js';
-
-// Scene
-const scene    = new THREE.Scene();
-scene.background = new THREE.Color(0x050816);
-scene.fog        = new THREE.Fog(0x050816, 20, 80);
-
-// Camera
-const canvas   = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({{canvas, antialias:true}});
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setSize(canvas.clientWidth, {height});
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-const camera = new THREE.PerspectiveCamera(55, canvas.clientWidth/{height}, 0.1, 200);
-camera.position.set(15, -15, 12);
-
-// Controls
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping    = true;
-controls.dampingFactor    = 0.05;
-controls.screenSpacePanning = false;
-controls.minDistance      = 1;
-controls.maxDistance      = 80;
-controls.maxPolarAngle    = Math.PI / 1.8;
-controls.target.set(8, 5, 1.5);
-
-// Lights
-const ambient = new THREE.AmbientLight(0x334466, 1.5);
-scene.add(ambient);
-
-const dirLight = new THREE.DirectionalLight(0xfff5e0, 3.0);
-dirLight.position.set(10, 10, 15);
-dirLight.castShadow = true;
-dirLight.shadow.camera.near   = 0.1;
-dirLight.shadow.camera.far    = 100;
-dirLight.shadow.camera.left   = -20;
-dirLight.shadow.camera.right  = 20;
-dirLight.shadow.camera.top    = 20;
-dirLight.shadow.camera.bottom = -20;
-dirLight.shadow.mapSize.width  = 2048;
-dirLight.shadow.mapSize.height = 2048;
-scene.add(dirLight);
-
-const fillLight = new THREE.DirectionalLight(0x4466aa, 0.8);
-fillLight.position.set(-10, -5, 5);
-scene.add(fillLight);
-
-// Grid
-const grid = new THREE.GridHelper(60, 60, 0x1a2744, 0x1a2744);
-grid.position.y = -0.01;
-scene.add(grid);
-
-// Carica glTF da base64
-const gltfB64 = '{gltf_b64}';
-const gltfJson = atob(gltfB64);
-const gltfBlob = new Blob([gltfJson], {{type:'application/json'}});
-const gltfUrl  = URL.createObjectURL(gltfBlob);
-
-const loader = new GLTFLoader();
-loader.load(gltfUrl, (gltf) => {{
-  const model = gltf.scene;
-  model.traverse(child => {{
-    if (child.isMesh) {{
-      child.castShadow    = true;
-      child.receiveShadow = true;
-    }}
-  }});
-  scene.add(model);
-
-  // Centra camera sulla scena
-  const box    = new THREE.Box3().setFromObject(model);
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z);
-  camera.position.set(center.x + maxDim, center.y - maxDim*0.8, center.z + maxDim*0.7);
-  controls.target.copy(center);
-  controls.update();
-
-  // Aggiungi luce puntuale per ogni lampada
-  model.traverse(child => {{
-    if (child.name && child.name.startsWith('Lamp_')) {{
-      const ptLight = new THREE.PointLight(0xfff5c0, 2.0, 8);
-      ptLight.position.copy(child.position);
-      scene.add(ptLight);
-    }}
-  }});
-
-  URL.revokeObjectURL(gltfUrl);
-  document.getElementById('info').innerHTML += `<br>✅ ${{model.children.length}} oggetti caricati`;
-}}, undefined, (err) => {{
-  console.error('Errore glTF:', err);
-  document.getElementById('info').innerHTML += '<br>❌ Errore caricamento';
-}});
-
-// Resize
-window.addEventListener('resize', () => {{
-  renderer.setSize(canvas.clientWidth, {height});
-  camera.aspect = canvas.clientWidth / {height};
-  camera.updateProjectionMatrix();
-}});
-
-// Loop
-function animate() {{
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}}
-animate();
-</script>
-</body>
-</html>
-"""
-    st.components.v1.html(html, height=height + 10, scrolling=False)
+    buf = BytesIO()
+    buf.write(json.dumps(gltf, indent=2).encode("utf-8"))
+    buf.seek(0)
+    return buf
 
 
 # ============================================================
 # PREVENTIVO
 # ============================================================
 def calc_preventivo(risultati, mg_pct, sg_pct, os_pct, iva_pct):
-    righe = []
+    righe, tm, ti = [], 0, 0
     for r in risultati:
-        lk   = r["calc"].get("lampada_usata", r["lampada"])
-        lamp = DB_LAMPADE.get(lk, DB_LAMPADE[r["lampada"]])
-        n    = r["calc"]["n"]
-        mat  = n * lamp["prezzo"]
-        ins  = n * lamp["installazione"]
-        sub  = mat + ins
-        righe.append({"area": r["nome"], "n": n, "lampada": lk[:40],
-                      "modalita": r["calc"].get("modalita","normale"),
-                      "mat": mat, "ins": ins, "sub": sub})
-    tm = sum(r["mat"] for r in righe)
-    ti = sum(r["ins"] for r in righe)
+        lamp = DB_LAMPADE[r.get("lampada_calc", r["lampada"])]
+        mat = r["calc"]["n"] * lamp["prezzo"]
+        ins = r["calc"]["n"] * lamp["installazione"]
+        righe.append({"area": r["nome"], "n": r["calc"]["n"],
+                      "lampada": r["lampada"][:30],
+                      "mat": mat, "ins": ins, "sub": mat+ins,
+                      "modalita": r["calc"].get("modalita","normale")})
+        tm += mat; ti += ins
     tn = tm + ti
-    sg = round(tn * sg_pct / 100, 2)
-    os = round(tn * os_pct / 100, 2)
-    mg = round((tn + sg + os) * mg_pct / 100, 2)
-    to = round(tn + sg + os + mg, 2)
-    iva= round(to * iva_pct / 100, 2)
-    tf = round(to + iva, 2)
-    return {"righe":righe,"tm":tm,"ti":ti,"tn":tn,"sg":sg,"os":os,"mg":mg,"to":to,"iva":iva,"tf":tf}
+    sg = tn * sg_pct/100
+    os2= tn * os_pct/100
+    tl = tn + sg + os2
+    mg = tl * mg_pct/100
+    to = tl + mg
+    iva= to * iva_pct/100
+    return {"righe":righe,"tm":tm,"ti":ti,"tn":tn,"sg":sg,
+            "os":os2,"tl":tl,"mg":mg,"to":to,"iva":iva,"tf":to+iva}
+
 
 # ============================================================
 # DXF
 # ============================================================
-def genera_dxf(risultati) -> BytesIO:
-    lines_dxf = ["0","SECTION","2","ENTITIES"]
+def genera_dxf(risultati):
+    out = "0\nSECTION\n2\nENTITIES\n"
+    lid = 1
     for r in risultati:
-        ox = float(r.get("offset_x",0))
-        lato = float(np.sqrt(r["sup"]))
-        lines_dxf += ["0","LWPOLYLINE","8","AREE","90","4","70","1",
-                       "10",str(ox),"20","0.0","10",str(ox+lato),"20","0.0",
-                       "10",str(ox+lato),"20",str(lato),"10",str(ox),"20",str(lato)]
-        for (lx,ly) in r["calc"]["coords"]:
-            lines_dxf += ["0","POINT","8","LAMPADE","10",str(ox+lx),"20",str(ly),"30","0.0"]
-        lines_dxf += ["0","TEXT","8","TESTI","10",str(ox+lato/2),"20",str(lato/2),"30","0.0",
-                       "40","0.3","1",f"{r['nome']} {r['calc']['E_m']}lux"]
-    lines_dxf += ["0","ENDSEC","0","EOF"]
+        ox = r.get("offset_x", 0); oy = r.get("offset_y", 0)
+        layer = "EMERGENZA" if r["calc"].get("modalita")=="emergenza" else "LUCI"
+        for (x, y) in r["calc"]["coords"]:
+            out += (f"0\nCIRCLE\n8\n{layer}\n"
+                    f"10\n{ox+x:.2f}\n20\n{oy+y:.2f}\n30\n0\n40\n0.25\n"
+                    f"0\nTEXT\n8\nIDENTIF\n"
+                    f"10\n{ox+x+0.3:.2f}\n20\n{oy+y+0.3:.2f}\n30\n0\n"
+                    f"40\n0.20\n1\nL{lid:03d}\n"); lid += 1
+    out += "0\nENDSEC\n0\nEOF\n"
+    return out
+
+
+# ============================================================
+# PDF TAVOLA A3 + VERIFICHE
+# ============================================================
+def genera_pdf(progetto, risultati, logo_bytes=None):
     buf = BytesIO()
-    buf.write("\n".join(lines_dxf).encode())
+    with PdfPages(buf) as pdf:
+
+        # --- PAGINA 1: TAVOLA ---
+        fig = plt.figure(figsize=(42/2.54, 29.7/2.54), dpi=120)
+        fig.patch.set_facecolor("white")
+
+        ax_h = fig.add_axes([0.0, 0.93, 1.0, 0.07])
+        ax_h.set_xlim(0,1); ax_h.set_ylim(0,1); ax_h.axis("off")
+        ax_h.add_patch(mpatches.Rectangle((0,0),1,1,facecolor="#1a365d"))
+        ax_h.text(.01,.62,"TAVOLA ILLUMINOTECNICA",color="white",
+                  fontsize=18,fontweight="bold",va="center")
+        ax_h.text(.01,.18,
+            f"Progetto: {progetto['nome']}  |  Committente: {progetto['committente']}  |  "
+            f"Data: {progetto['data']}  |  Tav. {progetto['num_tavola']}  |  Scala 1:100  |  "
+            f"Norma: UNI 11630:2016 + UNI EN 12464-1:2021",
+            color="#90cdf4", fontsize=7.5, va="center")
+        tot_l = sum(r["calc"]["n"] for r in risultati)
+        tot_W = sum(r["calc"]["W_t"] for r in risultati)
+        tot_s = sum(r["sup"] for r in risultati)
+        ax_h.text(.72,.62,
+            f"Lamp: {tot_l}  |  Potenza: {tot_W}W  |  Sup: {tot_s:.0f}m²  |  {tot_W/max(tot_s,1):.1f}W/m²",
+            color="white", fontsize=8, va="center")
+
+        # Logo
+        if logo_bytes:
+            from PIL import Image as PILImg
+            logo_img = PILImg.open(BytesIO(logo_bytes)).convert("RGBA")
+            logo_arr = np.array(logo_img)
+            ax_h.imshow(logo_arr, extent=(0.84,0.99,0.05,0.95),
+                        aspect="auto", zorder=5)
+
+        ax_p = fig.add_axes([0.01,0.10,0.68,0.81])
+        ax_p.set_facecolor("#f8fafc")
+        ax_p.grid(True, alpha=0.3, linewidth=0.4)
+        ax_p.set_xlabel("X [m]", fontsize=8); ax_p.set_ylabel("Y [m]", fontsize=8)
+        ax_p.set_title("PLANIMETRIA — POSIZIONAMENTO APPARECCHI",
+                       fontsize=10, fontweight="bold", pad=6)
+
+        COLORS = ["#3182ce","#e53e3e","#38a169","#d69e2e","#805ad5","#dd6b20",
+                  "#0f766e","#be185d","#1d4ed8","#b45309"]
+        lid = 1
+        for idx, r in enumerate(risultati):
+            ox = r.get("offset_x",0); oy = r.get("offset_y",0)
+            lato = np.sqrt(r["sup"]); c = COLORS[idx % len(COLORS)]
+            ax_p.add_patch(mpatches.Rectangle((ox,oy),lato,lato,
+                fill=True,facecolor=c,alpha=0.07,edgecolor=c,linewidth=2))
+            ax_p.text(ox+lato/2, oy+lato+0.25, r["nome"][:14],
+                      fontsize=7, ha="center", color=c, fontweight="bold")
+            sym_color = "#10b981" if r["calc"].get("modalita")=="emergenza" else "#fbbf24"
+            for (x, y) in r["calc"]["coords"]:
+                ax_p.add_patch(plt.Circle((ox+x, oy+y), 0.22,
+                    color=sym_color, ec="black", lw=1.2, zorder=5))
+                ax_p.text(ox+x, oy+y, f"L{lid}",
+                    fontsize=4.5, ha="center", va="center", fontweight="bold", zorder=6)
+                lid += 1
+        ax_p.autoscale_view(); ax_p.set_aspect("equal")
+
+        # Legenda
+        ax_l = fig.add_axes([0.71, 0.60, 0.28, 0.32])
+        ax_l.axis("off")
+        ax_l.set_title("LEGENDA APPARECCHI", fontsize=8, fontweight="bold", loc="left")
+        seen, yy = set(), 0.88
+        for r in risultati:
+            lk = r["calc"].get("lampada_usata", r["lampada"])
+            if lk not in seen:
+                seen.add(lk)
+                lsp = DB_LAMPADE[lk]
+                sc = "#10b981" if lsp["tipo"]=="Emergenza" else "#fbbf24"
+                ax_l.add_patch(plt.Circle((0.04,yy),0.03,color=sc,ec="black",lw=1))
+                ax_l.text(.10, yy+.03, lk[:30], fontsize=6.5, fontweight="bold", va="center")
+                ax_l.text(.10, yy-.04,
+                    f"{lsp['flusso_lm']}lm | {lsp['potenza_W']}W | Ra{lsp['ra']} | {lsp['temp_colore']}",
+                    fontsize=5.5, color="#555", va="center")
+                yy -= 0.18
+        ax_l.set_xlim(0,1); ax_l.set_ylim(0,1)
+
+        # Tabella riepilogo
+        ax_t = fig.add_axes([0.71, 0.25, 0.28, 0.33])
+        ax_t.axis("off")
+        ax_t.set_title("RIEPILOGO CALCOLI", fontsize=8, fontweight="bold", loc="left")
+        hdr = ["Area","m²","Lamp","Lux","W/m²","Norma"]
+        rows = [[r["nome"][:9], str(int(r["sup"])), str(r["calc"]["n"]),
+                 str(r["calc"]["E_m"]), str(r["calc"]["wm2"]),
+                 REQUISITI[r["tipo_locale"]]["norma"][-14:]]
+                for r in risultati]
+        tbl = ax_t.table(cellText=rows, colLabels=hdr, cellLoc="center",
+                         loc="upper center", colWidths=[0.22,0.10,0.10,0.10,0.10,0.22])
+        tbl.auto_set_font_size(False); tbl.set_fontsize(6.5)
+        for (row,col),cell in tbl.get_celld().items():
+            if row==0:
+                cell.set_facecolor("#1a365d"); cell.set_text_props(color="white",fontweight="bold")
+            elif row%2==0: cell.set_facecolor("#ebf8ff")
+            cell.set_edgecolor("#cbd5e0")
+        ax_t.set_xlim(0,1); ax_t.set_ylim(0,1)
+
+        # Note normative
+        ax_n = fig.add_axes([0.71, 0.10, 0.28, 0.13])
+        ax_n.axis("off")
+        note = ("NORME DI RIFERIMENTO:\n"
+                "• UNI 11630:2016 — Criteri progetto\n"
+                "• UNI EN 12464-1:2021 — Interni\n"
+                "• UNI EN 12464-2:2025 — Esterni\n"
+                "• UNI 11248:2016 — Strade\n"
+                "• UNI EN 1838:2025 — Emergenza\n"
+                "• UNI CEI 11222 — Manutenzione")
+        ax_n.text(0.03,0.95,note,fontsize=6,va="top",linespacing=1.6,
+                  bbox=dict(boxstyle="round",facecolor="#f0fff4",
+                            edgecolor="#68d391",lw=1))
+        ax_n.set_xlim(0,1); ax_n.set_ylim(0,1)
+
+        pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
+
+        # --- PAGINE VERIFICHE ---
+        for r in risultati:
+            calc = r["calc"]
+            lk   = calc.get("lampada_usata", r["lampada"])
+            lamp = DB_LAMPADE[lk]
+            alt2 = r.get("altezza_m", 2.70)
+            req  = REQUISITI[r["tipo_locale"]]
+
+            fig2, axes = plt.subplots(2, 3, figsize=(42/2.54, 29.7/2.54), dpi=120)
+            fig2.patch.set_facecolor("white")
+            em_label = " [EMERGENZA]" if calc.get("modalita")=="emergenza" else ""
+            fig2.suptitle(
+                f"VERIFICHE — {r['nome'].upper()}{em_label} | {r['tipo_locale']} | {req['norma']}",
+                fontsize=11, fontweight="bold", color="#1a365d", y=0.99)
+
+            ax = axes[0,0]; ax.axis("off")
+            ax.set_title("DATI DI CALCOLO", fontsize=9, fontweight="bold", color="#1a365d")
+            dati = [["Tipo locale",r["tipo_locale"]],["Superficie",f"{r['sup']} m²"],
+                    ["Altezza",f"{alt2} m"],["Indice k",str(calc["k"])],
+                    ["CU",str(calc["CU"])],["MF",str(calc["MF"])],
+                    ["Lux target",f"{calc['E_t']} lux"],["Lux ottenuto",f"{calc['E_m']} lux"],
+                    ["N apparecchi",str(calc["n"])],["Lampada",lk[:28]],
+                    ["Potenza totale",f"{calc['W_t']} W"],["W/m²",str(calc["wm2"])],
+                    ["UGR app.",str(lamp["ugr"])],["UGR max",f"< {calc['ugr_max']}"],
+                    ["Norma",req["norma"]]]
+            tb = ax.table(cellText=dati, loc="center", cellLoc="left", colWidths=[0.50,0.50])
+            tb.auto_set_font_size(False); tb.set_fontsize(7.5)
+            for (row,col),cell in tb.get_celld().items():
+                cell.set_edgecolor("#e2e8f0")
+                if col==0: cell.set_facecolor("#ebf8ff"); cell.set_text_props(fontweight="bold")
+                if row in [7,8] and col==1: cell.set_facecolor("#c6f6d5")
+            ax.set_xlim(0,1); ax.set_ylim(0,1)
+
+            ax = axes[0,1]
+            ax.set_title("MAPPA ISOLUX 2D", fontsize=9, fontweight="bold", color="#1a365d")
+            genera_isolux(ax, calc["coords"], lamp, r["sup"], alt2)
+
+            ax = axes[0,2]; ax.axis("off")
+            ax.set_title("VERIFICA CONFORMITÀ", fontsize=9, fontweight="bold", color="#1a365d")
+            checks = [
+                ("Illuminamento medio", f"{calc['E_m']} lux ≥ {calc['E_t']} lux", calc["ok_lux"]),
+                ("UGR abbagliamento",   f"{lamp['ugr']} ≤ {calc['ugr_max']}",      calc["ok_ugr"]),
+                ("Uniformità",          f"≥ {calc['uni_min']}",                    calc["ok_uni"]),
+                ("Resa cromatica Ra",   f"{lamp['ra']} ≥ {req['ra_min']}",          calc["ok_ra"]),
+            ]
+            yp = 0.84
+            for nm, vl, st2 in checks:
+                cc = "#22c55e" if st2=="✅" else "#ef4444"
+                bg = "#f0fff4" if st2=="✅" else "#fff5f5"
+                ax.add_patch(mpatches.FancyBboxPatch((0.02,yp-.13),0.96,0.18,
+                    boxstyle="round,pad=0.02",facecolor=bg,edgecolor=cc,lw=1.5))
+                ax.text(0.08,yp-.02,st2,fontsize=16,va="center")
+                ax.text(0.20,yp,nm,fontsize=8,fontweight="bold",va="center")
+                ax.text(0.20,yp-.07,vl,fontsize=7.5,color="#555",va="center")
+                yp -= 0.22
+            ax.add_patch(mpatches.Rectangle((0.02,0.01),0.96,0.12,
+                facecolor="#22c55e",edgecolor="none"))
+            ax.text(.50,.07,f"CONFORME {req['norma']}",fontsize=10,fontweight="bold",
+                    color="white",ha="center",va="center")
+            ax.set_xlim(0,1); ax.set_ylim(0,1)
+
+            ax = axes[1,0]
+            ax.set_title("PROFILO ILLUMINAMENTO ASSE X",fontsize=9,fontweight="bold",color="#1a365d")
+            lato2 = np.sqrt(r["sup"])
+            xv = np.linspace(0,lato2,120)
+            ym2 = lato2/2
+            zp = np.zeros_like(xv)
+            for (lx2,ly2) in calc["coords"]:
+                d2 = np.sqrt((xv-lx2)**2+(ym2-ly2)**2+alt2**2)
+                ct2 = alt2/d2
+                zp += (lamp["flusso_lm"]/(2*np.pi))*(ct2/d2**2)*0.60
+            ax.fill_between(xv, zp, alpha=0.25, color="#3182ce")
+            ax.plot(xv, zp, color="#1a365d", lw=2)
+            ax.axhline(calc["E_t"],color="#e53e3e",ls="--",lw=1.5,
+                       label=f"Target {calc['E_t']} lux")
+            ax.set_xlabel("X [m]",fontsize=8); ax.set_ylabel("Lux",fontsize=8)
+            ax.legend(fontsize=7); ax.grid(True,alpha=0.3)
+
+            ax = axes[1,1]; ax.axis("off")
+            ax.set_title("SCHEDA APPARECCHIO",fontsize=9,fontweight="bold",color="#1a365d")
+            scheda = [["Produttore",lamp["produttore"]],["Modello",lk[:28]],
+                      ["Tipo",lamp["tipo"]],["Flusso",f"{lamp['flusso_lm']} lm"],
+                      ["Potenza",f"{lamp['potenza_W']} W"],
+                      ["Efficienza",f"{lamp['efficienza']} lm/W"],
+                      ["Ra",str(lamp["ra"])],["Temp.colore",lamp["temp_colore"]],
+                      ["UGR",str(lamp["ugr"])],["IP",lamp["ip"]],
+                      ["Dimmerabile","Sì" if lamp["dimmerabile"] else "No"],
+                      ["Classe en.",lamp["classe_energ"]],
+                      ["Prezzo",f"EUR {lamp['prezzo']}"],
+                      ["Inst.",f"EUR {lamp['installazione']}"]]
+            ts = ax.table(cellText=scheda,loc="center",cellLoc="left",colWidths=[0.48,0.52])
+            ts.auto_set_font_size(False); ts.set_fontsize(7.5)
+            for (row,col),cell in ts.get_celld().items():
+                cell.set_edgecolor("#e2e8f0")
+                if col==0: cell.set_facecolor("#fef3c7"); cell.set_text_props(fontweight="bold")
+            ax.set_xlim(0,1); ax.set_ylim(0,1)
+
+            ax = axes[1,2]; ax.axis("off")
+            ax.set_title("PREVENTIVO AREA",fontsize=9,fontweight="bold",color="#1a365d")
+            mat2 = calc["n"]*lamp["prezzo"]; ins2 = calc["n"]*lamp["installazione"]
+            sub2 = mat2+ins2
+            prows = [[f"{calc['n']}x {lk[:20]}",f"EUR {mat2:,.0f}"],
+                     ["Installazione",f"EUR {ins2:,.0f}"],
+                     ["Subtotale",f"EUR {sub2:,.0f}"],
+                     ["IVA 22%",f"EUR {sub2*.22:,.0f}"],
+                     ["TOTALE",f"EUR {sub2*1.22:,.0f}"]]
+            tp = ax.table(cellText=prows,colLabels=["VOCE","IMPORTO"],
+                          loc="center",cellLoc="center",colWidths=[0.68,0.32])
+            tp.auto_set_font_size(False); tp.set_fontsize(7.5)
+            for (row,col),cell in tp.get_celld().items():
+                if row==0: cell.set_facecolor("#1a365d"); cell.set_text_props(color="white",fontweight="bold")
+                elif row==5: cell.set_facecolor("#22c55e"); cell.set_text_props(fontweight="bold")
+                elif row%2==0: cell.set_facecolor("#f7fafc")
+                cell.set_edgecolor("#e2e8f0")
+            ax.set_xlim(0,1); ax.set_ylim(0,1)
+
+            plt.tight_layout(rect=[0,0,1,0.97])
+            pdf.savefig(fig2, bbox_inches="tight"); plt.close(fig2)
+
     buf.seek(0)
     return buf
 
+
 # ============================================================
-# PDF TAVOLA A3
+# RELAZIONE COMPLETA UNI 11630:2016
 # ============================================================
-def genera_pdf(progetto: dict, risultati: list, logo_bytes=None) -> BytesIO:
+def genera_relazione_completa(progetto, risultati, prev, logo_bytes=None,
+                               mg_pct=35, sg_pct=12, os_pct=4, iva_pct=22):
     buf = BytesIO()
     with PdfPages(buf) as pdf:
-        fig = plt.figure(figsize=(16.54, 11.69), dpi=150, facecolor="white")
+
+        # --- FRONTESPIZIO ---
+        fig = plt.figure(figsize=(21/2.54, 29.7/2.54), dpi=120)
         fig.patch.set_facecolor("white")
+        ax = fig.add_axes([0,0,1,1]); ax.axis("off")
 
-        if logo_bytes and PIL_OK:
-            try:
-                ax_logo = fig.add_axes([0.02, 0.90, 0.10, 0.08])
-                ax_logo.imshow(PILImage.open(BytesIO(logo_bytes)))
-                ax_logo.axis("off")
-            except Exception:
-                pass
+        ax.add_patch(mpatches.Rectangle((0,.85),1,.15,facecolor="#1a365d"))
+        ax.add_patch(mpatches.Rectangle((0,.0),1,.08,facecolor="#1a365d"))
+        ax.add_patch(mpatches.Rectangle((.0,.84),1,.002,facecolor="#2b6cb0"))
 
-        ax_title = fig.add_axes([0.13, 0.90, 0.85, 0.08])
-        ax_title.set_facecolor("#1a365d")
-        ax_title.text(0.5, 0.7, "TAVOLA ILLUMINOTECNICA — LIGHTING AGENT PRO v4.0",
-                      color="white", fontsize=13, fontweight="bold", ha="center", va="center",
-                      transform=ax_title.transAxes)
-        ax_title.text(0.5, 0.2,
-                      f"Progetto: {progetto['nome']}  |  Committente: {progetto['committente']}  |  "
-                      f"Data: {progetto['data']}  |  Tav. {progetto['num_tavola']}  |  Scala 1:100  |  "
-                      f"Norma: UNI 11630:2016 + UNI EN 12464-1:2021",
-                      color="#90cdf4", fontsize=7.5, va="center", ha="center",
-                      transform=ax_title.transAxes)
-        ax_title.axis("off")
+        if logo_bytes:
+            from PIL import Image as PILImg
+            logo_img = PILImg.open(BytesIO(logo_bytes)).convert("RGBA")
+            logo_arr = np.array(logo_img)
+            ax.imshow(logo_arr, extent=(.60,.96,.86,.99), aspect="auto", zorder=5)
+
+        ax.text(.05,.92,"PROGETTO ILLUMINOTECNICO",fontsize=22,fontweight="bold",
+                color="white",va="center")
+        ax.text(.05,.87,"RELAZIONE TECNICA GENERALE",fontsize=14,color="#90cdf4",va="center")
+
+        y = 0.78
+        for label, val in [
+            ("Progetto",       progetto["nome"]),
+            ("Committente",    progetto["committente"]),
+            ("Progettista",    progetto["progettista"]),
+            ("Data",           progetto["data"]),
+            ("N. Tavola",      progetto["num_tavola"]),
+        ]:
+            ax.text(.07,y,label+":",fontsize=11,fontweight="bold",color="#1a365d",va="center")
+            ax.text(.38,y,val,fontsize=11,color="#1a365d",va="center")
+            y -= 0.065
+
+        ax.add_patch(mpatches.Rectangle((.05,.38),.90,.002,facecolor="#e2e8f0"))
+        ax.text(.07,.35,"NORME DI RIFERIMENTO",fontsize=10,fontweight="bold",color="#1a365d")
+        norme = [
+            "UNI 11630:2016 — Luce e illuminazione: Criteri per la stesura del progetto illuminotecnico",
+            "UNI EN 12464-1:2021 — Illuminazione dei posti di lavoro in interni",
+            "UNI EN 12464-2:2025 — Illuminazione dei posti di lavoro in esterni",
+            "UNI 11248:2016 — Illuminazione stradale: Selezione delle categorie",
+            "UNI EN 13201-2/3/4 — Illuminazione stradale: Requisiti di prestazione",
+            "UNI EN 1838:2025 — Applicazione dell'illuminotecnica: Illuminazione di emergenza",
+            "UNI CEI 11222:2013 — Impianti di illuminazione di sicurezza negli edifici",
+        ]
+        yn = 0.30
+        for n in norme:
+            ax.text(.08, yn, f"• {n}", fontsize=8, color="#374151", va="center")
+            yn -= 0.035
 
         tot_l = sum(r["calc"]["n"] for r in risultati)
         tot_W = sum(r["calc"]["W_t"] for r in risultati)
         tot_s = sum(r["sup"] for r in risultati)
+        ax.text(.07,.07,
+            f"Lampade totali: {tot_l}  |  Potenza: {tot_W} W  |  "
+            f"Superficie: {tot_s:.0f} m²  |  W/m²: {tot_W/max(tot_s,1):.1f}",
+            fontsize=9,color="white",va="center")
+        ax.set_xlim(0,1); ax.set_ylim(0,1)
+        pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
 
-        n_aree = len(risultati)
-        cols_plan = min(n_aree, 4)
-        rows_plan = int(np.ceil(n_aree / cols_plan))
+        # --- RELAZIONE DESCRITTIVA ---
+        fig = plt.figure(figsize=(21/2.54,29.7/2.54), dpi=120)
+        fig.patch.set_facecolor("white")
+        ax = fig.add_axes([0.08, 0.05, 0.84, 0.90]); ax.axis("off")
 
-        for idx, r in enumerate(risultati):
-            row = idx // cols_plan
-            col = idx % cols_plan
-            w_ax = 0.22
-            h_ax = 0.25
-            left = 0.04 + col * (w_ax + 0.02)
-            bottom = 0.58 - row * (h_ax + 0.05)
-            ax = fig.add_axes([left, bottom, w_ax, h_ax])
-            genera_isolux(ax, r["calc"]["coords"], DB_LAMPADE[r["lampada"]],
-                          r["sup"], r.get("altezza_m", 2.70))
-            req = REQUISITI[r["tipo_locale"]]
-            ok = r["calc"]["ok_lux"] == "✅"
-            ax.set_title(
-                f"{r['nome']}\n{r['calc']['E_m']} lux {'✅' if ok else '❌'} | {r['calc']['n']} lamp | {r['calc']['W_t']}W",
-                fontsize=6.5, color="#1a365d" if ok else "#c53030", pad=3)
-
-        ax_tab = fig.add_axes([0.04, 0.05, 0.92, 0.28])
-        ax_tab.axis("off")
-        col_labels = ["Area","Tipo","m²","N","Target lux","Ottenuto","W","W/m²","Lux✓","UGR✓","Ra✓","Norma"]
-        rows_data  = []
+        righe_testo = [
+            ("1. PREMESSA", True),
+            (f"Il presente documento costituisce la Relazione Tecnica Illuminotecnica del progetto «{progetto['nome']}»,", False),
+            (f"redatta in conformità alla norma UNI 11630:2016 che definisce i criteri per la stesura del progetto", False),
+            ("illuminotecnico e i contenuti minimi della relazione tecnica.", False),
+            ("", False),
+            ("2. CRITERI GENERALI DI PROGETTAZIONE", True),
+            ("La progettazione è stata sviluppata con l'obiettivo di garantire le condizioni ottimali di visibilità,", False),
+            ("comfort visivo e sicurezza per gli occupanti, nel rispetto delle normative vigenti e dei criteri di", False),
+            ("efficienza energetica. Il metodo di calcolo adottato è il Metodo del Flusso Luminoso (UNI 11630:2016,", False),
+            ("§ 6.3), con coefficiente di utilizzazione (CU=0,60) e fattore di manutenzione (MF=0,80).", False),
+            ("", False),
+            ("3. DESCRIZIONE DEGLI AMBIENTI E APPARECCHI", True),
+        ]
         for r in risultati:
-            req = REQUISITI[r["tipo_locale"]]
-            rows_data.append([
-                r["nome"][:20], r["tipo_locale"][:18], str(r["sup"]),
-                str(r["calc"]["n"]), str(r["calc"]["E_t"]), str(r["calc"]["E_m"]),
-                str(r["calc"]["W_t"]), str(r["calc"]["wm2"]),
-                r["calc"]["ok_lux"], r["calc"]["ok_ugr"], r["calc"]["ok_ra"],
-                req["norma"][:22],
-            ])
-        tbl = ax_tab.table(cellText=rows_data, colLabels=col_labels,
-                           cellLoc="center", loc="upper center",
-                           bbox=[0, 0, 1, 1])
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(6.5)
-        for (row_i, col_i), cell in tbl.get_celld().items():
-            if row_i == 0:
-                cell.set_facecolor("#1a365d")
-                cell.set_text_props(color="white", fontweight="bold")
-            elif row_i % 2 == 0:
-                cell.set_facecolor("#ebf8ff")
-            cell.set_edgecolor("#cbd5e0")
+            lk   = r["calc"].get("lampada_usata", r["lampada"])
+            lamp = DB_LAMPADE[lk]
+            req  = REQUISITI[r["tipo_locale"]]
+            em_label = " — EMERGENZA" if r["calc"].get("modalita")=="emergenza" else ""
+            righe_testo.append((f"   • {r['nome']}{em_label}: {r['tipo_locale']}, "
+                                f"{r['sup']} m², {r['calc']['n']}x {lk[:35]}, "
+                                f"{r['calc']['E_m']} lux (target {r['calc']['E_t']} lux), "
+                                f"Norma: {req['norma']}", False))
 
-        ax_foot = fig.add_axes([0.04, 0.01, 0.92, 0.03])
-        ax_foot.set_facecolor("#2d3748")
-        ax_foot.text(0.5, 0.5,
-                     f"Totale: {tot_l} lampade | {tot_W} W totali | {tot_s:.0f} m² | "
-                     f"{tot_W/max(tot_s,1):.1f} W/m² medio | "
-                     f"Progettista: {progetto['progettista']} | {progetto['data']}",
-                     color="white", fontsize=7, ha="center", va="center",
-                     transform=ax_foot.transAxes)
-        ax_foot.axis("off")
+        righe_testo += [
+            ("", False),
+            ("4. BILANCIO ENERGETICO", True),
+            (f"Potenza installata totale: {tot_W} W  —  Superficie trattata: {tot_s:.0f} m²", False),
+            (f"Densità di potenza media: {tot_W/max(tot_s,1):.2f} W/m²", False),
+            ("Il sistema è progettato con apparecchi dimmerabili DALI per ottimizzare i consumi.", False),
+            ("", False),
+            ("5. CONFORMITÀ NORMATIVA", True),
+            ("Tutti gli ambienti risultano conformi alle rispettive norme di riferimento come", False),
+            ("verificato nelle schede di calcolo allegate (Tavole successive).", False),
+        ]
 
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
-    buf.seek(0)
-    return buf
+        yy = 0.97
+        for testo, bold in righe_testo:
+            if testo == "":
+                yy -= 0.018; continue
+            fw = "bold" if bold else "normal"
+            cl = "#1a365d" if bold else "#1f2937"
+            fs = 10 if bold else 8.5
+            ax.text(0, yy, testo, fontsize=fs, fontweight=fw, color=cl, va="top",
+                    wrap=True, transform=ax.transAxes)
+            yy -= 0.028 if bold else 0.022
+            if yy < 0.03: break
 
-# ============================================================
-# RELAZIONE COMPLETA PDF
-# ============================================================
-def genera_relazione_completa(progetto, risultati, prev, logo_bytes=None,
-                               mg_pct=35, sg_pct=12, os_pct=4, iva_pct=22) -> BytesIO:
-    buf = BytesIO()
-    with PdfPages(buf) as pdf:
-        # Frontespizio
-        fig = plt.figure(figsize=(11.69, 8.27), dpi=120, facecolor="#1a365d")
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_facecolor("#1a365d")
-        ax.axis("off")
-        if logo_bytes and PIL_OK:
-            try:
-                ax_l = fig.add_axes([0.38, 0.72, 0.24, 0.14])
-                ax_l.imshow(PILImage.open(BytesIO(logo_bytes)))
-                ax_l.axis("off")
-            except Exception:
-                pass
-        ax.text(0.5, 0.65, "RELAZIONE TECNICA ILLUMINOTECNICA",
-                color="white", fontsize=18, fontweight="bold", ha="center", va="center",
-                transform=ax.transAxes)
-        ax.text(0.5, 0.57, progetto["nome"],
-                color="#90cdf4", fontsize=14, ha="center", transform=ax.transAxes)
-        for i, (label, val) in enumerate([
-            ("Committente", progetto["committente"]),
-            ("Progettista", progetto["progettista"]),
-            ("Data",        progetto["data"]),
-            ("N. Tavola",   progetto["num_tavola"]),
-        ]):
-            ax.text(0.3, 0.44 - i*0.07, f"{label}:", color="#a0aec0", fontsize=10,
-                    ha="right", transform=ax.transAxes)
-            ax.text(0.32, 0.44 - i*0.07, val, color="white", fontsize=10,
-                    ha="left", transform=ax.transAxes)
-        ax.text(0.5, 0.10,
-                "UNI 11630:2016 | UNI EN 12464-1:2021 | UNI EN 12464-2:2025 | UNI EN 1838:2025 | UNI 11248:2016",
-                color="#4a5568", fontsize=8, ha="center", transform=ax.transAxes)
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
+        ax.set_xlim(0,1); ax.set_ylim(0,1)
+        pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
 
-        # Tavola A3
-        fig_tav = genera_pdf.__wrapped__(progetto, risultati, logo_bytes) if hasattr(genera_pdf, "__wrapped__") else None
+        # --- TAVOLA + VERIFICHE (riuso funzione) ---
+        pdf_inner = genera_pdf(progetto, risultati, logo_bytes)
+        import PyPDF2
         try:
-            buf_tav = genera_pdf(progetto, risultati, logo_bytes)
-            import matplotlib.image as mpimg
-            img_arr = mpimg.imread(buf_tav)
-            fig2 = plt.figure(figsize=(16.54, 11.69), dpi=100)
-            ax2  = fig2.add_axes([0,0,1,1])
-            ax2.imshow(img_arr)
-            ax2.axis("off")
-            pdf.savefig(fig2, bbox_inches="tight")
-            plt.close(fig2)
+            reader = PyPDF2.PdfReader(pdf_inner)
+            writer = PyPDF2.PdfWriter()
+            for page in reader.pages:
+                writer.add_page(page)
+            tmp = BytesIO()
+            writer.write(tmp)
         except Exception:
             pass
 
-        # Schede verifica per ogni area
-        for r in risultati:
-            req = REQUISITI[r["tipo_locale"]]
-            fig3 = plt.figure(figsize=(11.69, 8.27), dpi=120, facecolor="white")
-            ax3 = fig3.add_axes([0, 0.7, 1, 0.28])
-            ax3.set_facecolor("#2b6cb0")
-            ax3.axis("off")
-            ax3.text(0.5, 0.6, f"SCHEDA VERIFICA — {r['nome']}",
-                     color="white", fontsize=13, fontweight="bold", ha="center",
-                     transform=ax3.transAxes)
-            ax3.text(0.5, 0.2, f"{r['tipo_locale']} | {r['sup']} m² | {r.get('altezza_m',2.70)} m | {req['norma']}",
-                     color="#bee3f8", fontsize=9, ha="center", transform=ax3.transAxes)
-            ax_iso = fig3.add_axes([0.05, 0.18, 0.45, 0.48])
-            genera_isolux(ax_iso, r["calc"]["coords"],
-                          DB_LAMPADE[r["lampada"]], r["sup"], r.get("altezza_m", 2.70))
-            ax_iso.set_title("Distribuzione Isolux", fontsize=9, color="#1a365d")
-            ax_v = fig3.add_axes([0.55, 0.18, 0.40, 0.48])
-            ax_v.axis("off")
-            checks = [
-                ("Illuminamento medio Em", f"{r['calc']['E_m']} lux ≥ {r['calc']['E_t']} lux", r["calc"]["ok_lux"]),
-                ("UGR massimo",            f"{DB_LAMPADE[r['lampada']]['ugr']} ≤ {req['ugr_max']}", r["calc"]["ok_ugr"]),
-                ("Uniformità U0",          f"≥ {req['uni']}", r["calc"]["ok_uni"]),
-                ("Indice resa colore Ra",  f"{DB_LAMPADE[r['lampada']]['ra']} ≥ {req['ra_min']}", r["calc"]["ok_ra"]),
-            ]
-            for i, (label, val, ok) in enumerate(checks):
-                color = "#276749" if ok == "✅" else "#9b2c2c"
-                ax_v.text(0.0, 0.85 - i*0.22, f"{ok} {label}", fontsize=9,
-                          color=color, fontweight="bold", transform=ax_v.transAxes)
-                ax_v.text(0.0, 0.77 - i*0.22, f"    {val}", fontsize=8,
-                          color="#4a5568", transform=ax_v.transAxes)
-            ax_info = fig3.add_axes([0.05, 0.02, 0.90, 0.14])
-            ax_info.axis("off")
-            lk  = r["calc"].get("lampada_usata", r["lampada"])
-            lamp= DB_LAMPADE.get(lk, DB_LAMPADE[r["lampada"]])
-            ax_info.text(0.5, 0.6,
-                         f"Apparecchio: {lk} | N={r['calc']['n']} | "
-                         f"Potenza tot.: {r['calc']['W_t']} W | {r['calc']['wm2']} W/m² | "
-                         f"k={r['calc']['k']} | CU={r['calc']['CU']} | MF={r['calc']['MF']}",
-                         fontsize=8, ha="center", color="#2d3748", transform=ax_info.transAxes)
-            pdf.savefig(fig3, bbox_inches="tight")
-            plt.close(fig3)
-
-        # Rendering 3D per ogni area
+        # --- RENDERING 3D per ogni area ---
         for r in risultati:
             try:
-                buf_r = genera_rendering(r, r["calc"])
-                import matplotlib.image as mpimg
-                img = mpimg.imread(buf_r)
-                fig4 = plt.figure(figsize=(14, 9), dpi=100, facecolor="#050816")
-                ax4  = fig4.add_axes([0,0,1,1])
-                ax4.imshow(img)
-                ax4.axis("off")
-                pdf.savefig(fig4, bbox_inches="tight", facecolor="#050816")
-                plt.close(fig4)
+                r_buf = genera_rendering(r, r["calc"])
+                img_arr = plt.imread(r_buf)
+                fig = plt.figure(figsize=(21/2.54, 29.7/2.54), dpi=100)
+                fig.patch.set_facecolor("black")
+                ax = fig.add_axes([0.02, 0.08, 0.96, 0.86])
+                ax.imshow(img_arr)
+                ax.axis("off")
+                ax.set_title(f"Rendering 3D — {r['nome']}",
+                             fontsize=13, fontweight="bold", color="white", pad=10)
+                pdf.savefig(fig, bbox_inches="tight", facecolor="black")
+                plt.close(fig)
             except Exception:
                 pass
 
-        # Preventivo
-        if prev:
-            fig5 = plt.figure(figsize=(11.69, 8.27), dpi=120, facecolor="white")
-            ax5 = fig5.add_axes([0, 0, 1, 1])
-            ax5.axis("off")
-            ax5.text(0.5, 0.95, "PREVENTIVO ECONOMICO", fontsize=14, fontweight="bold",
-                     color="#1a365d", ha="center", transform=ax5.transAxes)
-            rows_p = [[r["area"], str(r["n"]), r["lampada"][:35],
-                        f"EUR {r['mat']:,.0f}", f"EUR {r['ins']:,.0f}", f"EUR {r['sub']:,.0f}"]
-                       for r in prev["righe"]]
-            tbl5 = ax5.table(cellText=rows_p,
-                              colLabels=["Area","N","Apparecchio","Materiali","Installazione","Subtotale"],
-                              cellLoc="center", loc="center", bbox=[0.0, 0.35, 1.0, 0.50])
-            tbl5.auto_set_font_size(False)
-            tbl5.set_fontsize(8)
-            for (ri, ci), cell in tbl5.get_celld().items():
-                if ri == 0:
-                    cell.set_facecolor("#1a365d")
-                    cell.set_text_props(color="white", fontweight="bold")
-                elif ri % 2 == 0:
-                    cell.set_facecolor("#ebf8ff")
-            riepilogo = (
-                f"Materiali: EUR {prev['tm']:,.0f}   |   Installazione: EUR {prev['ti']:,.0f}   |   "
-                f"Spese generali: EUR {prev['sg']:,.0f}   |   Oneri sicurezza: EUR {prev['os']:,.0f}\n"
-                f"Margine: EUR {prev['mg']:,.0f}   |   OFFERTA: EUR {prev['to']:,.0f}   |   "
-                f"IVA: EUR {prev['iva']:,.0f}   |   TOTALE IVA INCLUSA: EUR {prev['tf']:,.0f}"
-            )
-            ax5.text(0.5, 0.20, riepilogo, fontsize=9, ha="center", color="#1a365d",
-                     transform=ax5.transAxes,
-                     bbox=dict(boxstyle="round,pad=0.5", facecolor="#ebf8ff", edgecolor="#2b6cb0"))
-            pdf.savefig(fig5, bbox_inches="tight")
-            plt.close(fig5)
+        # --- PREVENTIVO FINALE ---
+        pv = calc_preventivo(risultati, mg_pct, sg_pct, os_pct, iva_pct)
+        fig = plt.figure(figsize=(21/2.54, 29.7/2.54), dpi=120)
+        fig.patch.set_facecolor("white")
+        ax = fig.add_axes([0,0,1,1]); ax.axis("off")
+        ax.add_patch(mpatches.Rectangle((0,.92),1,.08,facecolor="#1a365d"))
+        ax.text(.05,.96,"PREVENTIVO ECONOMICO",fontsize=16,fontweight="bold",
+                color="white",va="center")
+        ax.text(.05,.91,
+            f"Progetto: {progetto['nome']}  |  Data: {progetto['data']}  |  "
+            f"Progettista: {progetto['progettista']}",
+            fontsize=8, color="#1a365d", va="top")
+
+        righe_prev = [[r["area"],str(r["n"]),r["lampada"][:25],
+                       f"EUR {r['mat']:,.0f}",f"EUR {r['ins']:,.0f}",
+                       f"EUR {r['sub']:,.0f}"] for r in pv["righe"]]
+        tab_ax = fig.add_axes([0.05, 0.50, 0.90, 0.38])
+        tab_ax.axis("off")
+        tp = tab_ax.table(
+            cellText=righe_prev,
+            colLabels=["Area","N","Lampada","Materiali","Installazione","Subtotale"],
+            loc="center", cellLoc="center",
+            colWidths=[0.18,0.06,0.28,0.14,0.14,0.14])
+        tp.auto_set_font_size(False); tp.set_fontsize(7)
+        for (row,col),cell in tp.get_celld().items():
+            if row==0: cell.set_facecolor("#1a365d"); cell.set_text_props(color="white",fontweight="bold")
+            elif row%2==0: cell.set_facecolor("#f7fafc")
+            cell.set_edgecolor("#e2e8f0")
+
+        ry = 0.46
+        riepilogo = [
+            ("Materiali",           f"EUR {pv['tm']:>12,.0f}"),
+            ("Installazione",       f"EUR {pv['ti']:>12,.0f}"),
+            ("Totale lavori netto", f"EUR {pv['tn']:>12,.0f}"),
+            (f"Spese generali {sg_pct}%",f"EUR {pv['sg']:>12,.0f}"),
+            (f"Oneri sicurezza {os_pct}%",f"EUR {pv['os']:>12,.0f}"),
+            (f"Margine {mg_pct}%",  f"EUR {pv['mg']:>12,.0f}"),
+            ("OFFERTA CLIENTE",     f"EUR {pv['to']:>12,.0f}"),
+            (f"IVA {iva_pct}%",     f"EUR {pv['iva']:>12,.0f}"),
+            ("TOTALE IVA INCLUSA",  f"EUR {pv['tf']:>12,.0f}"),
+        ]
+        for i,(label,val) in enumerate(riepilogo):
+            bold_rows = [6,8]
+            fg = "#22c55e" if i in bold_rows else ("#e53e3e" if i==7 else "#1f2937")
+            fw = "bold" if i in bold_rows else "normal"
+            fs = 11 if i in bold_rows else 9
+            ax.text(.40, ry, label, fontsize=fs, fontweight=fw, color=fg, va="center")
+            ax.text(.86, ry, val,   fontsize=fs, fontweight=fw, color=fg, va="center", ha="right")
+            if i in bold_rows:
+                ax.add_patch(mpatches.Rectangle((.38,ry-.018),.50,.032,
+                    facecolor="#f0fff4" if i==8 else "#fef9c3",
+                    edgecolor=fg, lw=1.2, alpha=0.7))
+            ry -= 0.035
+
+        ax.set_xlim(0,1); ax.set_ylim(0,1)
+        pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
 
     buf.seek(0)
     return buf
@@ -1254,36 +1220,12 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🗺️ Planimetria")
-    plan_file = st.file_uploader("Carica planimetria (PNG/JPG)",
-                                  type=["png","jpg","jpeg"], key="plan_up")
+    plan_file = st.file_uploader("Carica planimetria (PDF/PNG/JPG)",
+                                  type=["pdf","png","jpg","jpeg"], key="plan_up")
     if plan_file and plan_file.type.startswith("image"):
         plan_bytes = plan_file.read()
         st.session_state.plan_bytes = plan_bytes
         st.image(plan_bytes, use_column_width=True)
-
-    st.markdown("---")
-    st.markdown("### 📏 Scala planimetria")
-    scala_auto_btn = st.button("🔍 Rileva scala automaticamente (AI)")
-    if scala_auto_btn and "plan_bytes" in st.session_state:
-        gk = st.session_state.get("groq_key","")
-        gmk = st.session_state.get("gemini_key","")
-        with st.spinner("Analisi scala in corso..."):
-            scala_trovata = detect_scala_ai(st.session_state.plan_bytes, gk, gmk)
-        if scala_trovata:
-            st.success(f"✅ Scala rilevata: {scala_trovata}")
-            st.session_state.scala_suggerita = scala_trovata
-        else:
-            st.warning("⚠️ Scala non rilevata, imposta manualmente.")
-    scala_options = ["1:50","1:100","1:200","1:500","Personalizzata"]
-    scala_default = st.session_state.get("scala_suggerita","1:100")
-    scala_idx = scala_options.index(scala_default) if scala_default in scala_options else 1
-    scala_sel = st.selectbox("Scala planimetria", scala_options, index=scala_idx)
-    if scala_sel == "Personalizzata":
-        scala_mpp = st.number_input("Metri per 100px", min_value=0.1, max_value=50.0, value=2.5, step=0.1)
-    else:
-        scala_map = {"1:50":1.25,"1:100":2.5,"1:200":5.0,"1:500":12.5}
-        scala_mpp = scala_map.get(scala_sel, 2.5)
-    st.caption(f"1 pixel = {scala_mpp/100:.4f} m | 100px = {scala_mpp} m")
 
     st.markdown("---")
     st.markdown("### 💡 Fotometrie personalizzate")
@@ -1315,19 +1257,41 @@ with st.sidebar:
         ["Tutti","BEGA","iGuzzini","Flos","Artemide","Delta Light","Gewiss","Philips","Custom IES"])
 
     st.markdown("---")
+    st.markdown("### 📏 Scala planimetria")
+    if st.button("🔍 Rileva scala con AI") and "plan_bytes" in st.session_state:
+        with st.spinner("Rilevamento scala..."):
+            scala_trovata = detect_scala_ai(
+                st.session_state.plan_bytes,
+                groq_key=st.session_state.get("groq_key",""),
+                gemini_key=st.session_state.get("gemini_key",""),
+            )
+        if scala_trovata:
+            st.success(f"Scala rilevata: {scala_trovata}")
+            st.session_state.scala_suggerita = scala_trovata
+        else:
+            st.warning("Scala non rilevata, imposta manualmente.")
+    scala_options = ["1:50","1:100","1:200","1:500"]
+    scala_default = st.session_state.get("scala_suggerita","1:100")
+    scala_idx = scala_options.index(scala_default) if scala_default in scala_options else 1
+    scala_sel = st.selectbox("Scala planimetria", scala_options, index=scala_idx)
+    scala_map = {"1:50":1.25,"1:100":2.5,"1:200":5.0,"1:500":12.5}
+    scala_mpp = scala_map.get(scala_sel, 2.5)
+    st.caption(f"1 pixel = {scala_mpp/100:.4f} m  |  100px = {scala_mpp} m")
+
+    st.markdown("---")
     with st.expander("🤖 AI Vision — Chiavi API (gratuite)"):
         st.caption("Nessuna carta di credito richiesta")
-        groq_key_in = st.text_input("Groq API Key", type="password",
-                                     value=st.session_state.get("groq_key",""),
-                                     help="console.groq.com — gratuito")
-        gemini_key_in = st.text_input("Google Gemini API Key", type="password",
-                                       value=st.session_state.get("gemini_key",""),
-                                       help="aistudio.google.com — gratuito")
+        groq_key_in = st.text_input("Groq API Key",
+            value=st.session_state.get("groq_key",""),
+            type="password", help="console.groq.com")
+        gemini_key_in = st.text_input("Google Gemini API Key",
+            value=st.session_state.get("gemini_key",""),
+            type="password", help="aistudio.google.com")
         if groq_key_in:
             st.session_state.groq_key = groq_key_in
         if gemini_key_in:
             st.session_state.gemini_key = gemini_key_in
-        st.info("Fallback automatico: Groq → Gemini → Ollama locale")
+        st.info("Fallback: Groq → Gemini → Ollama locale")
 
 # ============================================================
 # HEADER
@@ -1339,7 +1303,7 @@ with col_logo:
 with col_title:
     st.markdown("""
 <div class="header-box">
-<h1 style="margin:0;font-size:2rem">💡 Lighting Agent Pro v4.0</h1>
+<h1 style="margin:0;font-size:2rem">💡 Lighting Agent Pro v3.0</h1>
 <p style="margin:.3rem 0 0;opacity:.85">
 UNI 11630:2016 · UNI EN 12464-1:2021 · UNI EN 12464-2:2025 ·
 UNI 11248:2016 · UNI EN 1838:2025 · UNI CEI 11222 · AI Vision · Rendering 3D
@@ -1398,59 +1362,73 @@ with tab1:
             else:
                 st.error("Inserisci il nome area.")
 
-    # --- PLANIMETRIA ---
+   # --- DISEGNO SU PLANIMETRIA (versione cloud-safe) ---
+st.markdown("---")
+st.markdown("#### 🖊️ Aggiungi aree dalla planimetria")
+
+if "plan_bytes" in st.session_state:
+    st.image(
+        st.session_state.plan_bytes,
+        caption="Planimetria caricata — usa il form sopra per aggiungere le aree",
+        use_column_width=True,
+    )
+    st.info(
+        "💡 **Istruzioni**: osserva la planimetria e inserisci le aree "
+        "manualmente nel form qui sopra, indicando superficie e tipo locale."
+    )
+
+    # Aggiungi area da coordinate manuali
+    st.markdown("##### Inserisci coordinate area (opzionale)")
+    with st.form("form_coords", clear_on_submit=True):
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1: cx = st.number_input("X origine [m]", 0.0, 500.0, 0.0, 0.5)
+        with cc2: cy = st.number_input("Y origine [m]", 0.0, 500.0, 0.0, 0.5)
+        with cc3: cw = st.number_input("Larghezza [m]", 1.0, 100.0, 5.0, 0.5)
+        with cc4: ch = st.number_input("Profondità [m]", 1.0, 100.0, 4.0, 0.5)
+
+        nome_coord  = st.text_input("Nome area", placeholder="es. Ufficio B")
+        tipo_coord  = st.selectbox("Tipo locale", list(REQUISITI.keys()), key="tc_coord")
+        lamp_coord  = st.selectbox("Apparecchio", list(DB_LAMPADE.keys()), key="lc_coord")
+        alt_coord   = st.number_input("Altezza [m]", 2.0, 12.0, 2.70, 0.05, key="ac_coord")
+        em_coord    = st.checkbox("🚨 Calcola emergenza", key="ec_coord")
+
+        if st.form_submit_button("➕ Aggiungi area da coordinate"):
+            if nome_coord.strip():
+                area_m2 = round(cw * ch, 1)
+                st.session_state.aree.append({
+                    "nome":          nome_coord.strip(),
+                    "tipo_locale":   tipo_coord,
+                    "superficie_m2": area_m2,
+                    "altezza_m":     alt_coord,
+                    "lampada":       lamp_coord,
+                    "sup":           area_m2,
+                    "emergenza":     em_coord,
+                    "polygon_px":    [
+                        [cx, cy], [cx+cw, cy],
+                        [cx+cw, cy+ch], [cx, cy+ch]
+                    ],
+                })
+                st.success(f"✅ Area «{nome_coord}» {area_m2}m² aggiunta!")
+            else:
+                st.error("Inserisci il nome area.")
+else:
+    st.info("Carica una planimetria nel menu laterale per visualizzarla.")
+
+
+    # --- AI VISION ---
     st.markdown("---")
-    st.markdown("#### 🖊️ Aggiungi aree dalla planimetria")
-
+    st.markdown("#### 🤖 AI Vision (riconoscimento automatico aree)")
+    st.info("Fallback automatico: Groq → Gemini → Ollama locale. Configura le chiavi nella sidebar.")
     if "plan_bytes" in st.session_state:
-        st.image(
-            st.session_state.plan_bytes,
-            caption="Planimetria caricata",
-            use_column_width=True,
-        )
-
-        st.markdown("##### Inserisci coordinate area")
-        with st.form("form_coords", clear_on_submit=True):
-            cc1, cc2, cc3, cc4 = st.columns(4)
-            with cc1: cx = st.number_input("X origine [m]", 0.0, 500.0, 0.0, 0.5)
-            with cc2: cy = st.number_input("Y origine [m]", 0.0, 500.0, 0.0, 0.5)
-            with cc3: cw = st.number_input("Larghezza [m]", 1.0, 100.0, 5.0, 0.5)
-            with cc4: ch = st.number_input("Profondità [m]", 1.0, 100.0, 4.0, 0.5)
-            nome_coord  = st.text_input("Nome area", placeholder="es. Ufficio B")
-            tipo_coord  = st.selectbox("Tipo locale", list(REQUISITI.keys()), key="tc_coord")
-            lamp_coord  = st.selectbox("Apparecchio", list(DB_LAMPADE.keys()), key="lc_coord")
-            alt_coord   = st.number_input("Altezza [m]", 2.0, 12.0, 2.70, 0.05, key="ac_coord")
-            em_coord    = st.checkbox("🚨 Calcola emergenza", key="ec_coord")
-            if st.form_submit_button("➕ Aggiungi area da coordinate"):
-                if nome_coord.strip():
-                    area_m2 = round(cw * ch, 1)
-                    st.session_state.aree.append({
-                        "nome":          nome_coord.strip(),
-                        "tipo_locale":   tipo_coord,
-                        "superficie_m2": area_m2,
-                        "altezza_m":     alt_coord,
-                        "lampada":       lamp_coord,
-                        "sup":           area_m2,
-                        "emergenza":     em_coord,
-                        "polygon_px":    [[cx,cy],[cx+cw,cy],[cx+cw,cy+ch],[cx,cy+ch]],
-                    })
-                    st.success(f"✅ Area «{nome_coord}» {area_m2}m² aggiunta!")
-                else:
-                    st.error("Inserisci il nome area.")
-
-        # --- AI VISION ---
-        st.markdown("---")
-        st.markdown("#### 🤖 AI Vision (riconoscimento automatico aree)")
-        st.info("Utilizza Groq (gratuito) → Gemini (gratuito) → Ollama locale. Configura le chiavi API nella sidebar.")
         col_ai1, col_ai2 = st.columns([3,1])
         with col_ai1:
-            st.caption(f"Groq: {'✅ configurato' if st.session_state.get('groq_key') else '⚠️ non configurato'}  |  "
-                       f"Gemini: {'✅ configurato' if st.session_state.get('gemini_key') else '⚠️ non configurato'}  |  "
-                       f"Ollama: localhost:11434")
+            gk_ok  = "✅" if st.session_state.get("groq_key")   else "⚠️ non configurato"
+            gmk_ok = "✅" if st.session_state.get("gemini_key") else "⚠️ non configurato"
+            st.caption(f"Groq: {gk_ok}  |  Gemini: {gmk_ok}  |  Ollama: localhost:11434")
         with col_ai2:
-            ai_btn = st.button("🔍 Analizza planimetria con AI", type="primary")
+            ai_btn = st.button("🔍 Analizza con AI", type="primary")
         if ai_btn:
-            with st.spinner("Analisi AI in corso... (Groq → Gemini → Ollama)"):
+            with st.spinner("Analisi AI in corso..."):
                 areas_found = analizza_planimetria_ai(
                     st.session_state.plan_bytes,
                     groq_key=st.session_state.get("groq_key",""),
@@ -1472,12 +1450,12 @@ with tab1:
                         "emergenza":     False,
                         "polygon_px":    a.get("polygon_px",[]),
                     })
-                st.success(f"✅ AI ha trovato e aggiunto {len(areas_found)} aree!")
+                st.success(f"✅ AI ha trovato {len(areas_found)} aree!")
                 st.rerun()
             else:
-                st.error("⚠️ Nessuna area rilevata. Verifica le chiavi API nella sidebar o aggiungi aree manualmente.")
+                st.error("⚠️ Nessuna area rilevata. Verifica le chiavi API nella sidebar.")
     else:
-        st.info("Carica una planimetria nel menu laterale per visualizzarla e usare AI Vision.")
+        st.info("Carica una planimetria per usare AI Vision.")
 
     # --- LISTA AREE ---
     st.markdown("---")
@@ -1505,11 +1483,8 @@ with tab1:
             with c3:
                 if st.button("🗑️", key=f"del_{i}"):
                     st.session_state.aree.pop(i); st.rerun()
-        if st.button("🗑️ Svuota tutte le aree", type="secondary"):
-            st.session_state.aree = []
-            st.rerun()
     else:
-        st.info("Nessuna area inserita. Aggiungi aree manualmente, da coordinate o tramite AI Vision.")
+        st.info("Nessuna area inserita. Aggiungi aree manualmente, disegnando sulla planimetria o tramite AI.")
 
 # ============================================================
 # TAB 2 — CALCOLI
@@ -1580,6 +1555,7 @@ with tab3:
         st.warning("Esegui prima i calcoli.")
     else:
         c1, c2 = st.columns(2)
+       
         with c1:
             if st.button("📄 GENERA TAVOLA A3 PDF", type="primary"):
                 with st.spinner("Generazione Tavola A3..."):
@@ -1625,11 +1601,13 @@ with tab4:
                 cb.metric("Potenza W",    str(r["calc"]["W_t"]))
                 cc.metric("W/m²",         str(r["calc"]["wm2"]))
                 cd.metric("Lampade",      str(r["calc"]["n"]))
+
                 c1, c2, c3, c4 = st.columns(4)
                 c1.success(f"Illuminamento {r['calc']['ok_lux']}")
                 c2.success(f"UGR {r['calc']['ok_ugr']}")
                 c3.success(f"Uniformità {r['calc']['ok_uni']}")
                 c4.success(f"Ra {r['calc']['ok_ra']}")
+
                 if r["calc"].get("modalita") == "emergenza":
                     st.info(
                         "🚨 **Emergenza UNI EN 1838:2025** — "
@@ -1654,42 +1632,62 @@ with tab4:
 # ============================================================
 # TAB 5 — RENDERING 3D
 # ============================================================
-
 with tab5:
     st.subheader("Rendering 3D")
     if "risultati" not in st.session_state:
         st.warning("Esegui prima i calcoli.")
     else:
         names = [r["nome"] for r in st.session_state.risultati]
+        scelta = st.selectbox("Seleziona area da renderizzare", names)
 
-        # --- VIEWER 3D NAVIGABILE (nuova sezione) ---
-        st.markdown("#### 🌐 Vista 3D Navigabile (WebGL)")
-        st.caption("Trascina per ruotare · Scroll per zoom · Tasto destro per spostare")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            render_singolo = st.button("🎨 RENDERING AREA SELEZIONATA", type="primary")
+        with c2:
+            render_tutti = st.button("🎨 RENDERING TUTTE LE AREE")
+        with c3:
+            export_gltf = st.button("📦 ESPORTA SCENA glTF (Blender/Unreal)")
 
-        col_v1, col_v2 = st.columns([3,1])
-        with col_v2:
-            viewer_height = st.slider("Altezza viewer", 400, 900, 600, 50, key="vh")
-            show_all_3d   = st.checkbox("Mostra tutte le aree", value=True)
-        with col_v1:
-            if st.button("🌐 APRI VIEWER 3D NAVIGABILE", type="primary"):
-                st.session_state.show_viewer = True
-            if st.button("❌ Chiudi viewer", key="close_v"):
-                st.session_state.show_viewer = False
+        if render_singolo:
+            idx = names.index(scelta)
+            r = st.session_state.risultati[idx]
+            with st.spinner(f"Rendering {scelta}..."):
+                buf = genera_rendering(r, r["calc"])
+                st.image(buf, caption=f"Rendering 3D — {scelta}", use_column_width=True)
+                buf.seek(0)
+                st.download_button("⬇️ Scarica PNG", data=buf,
+                    file_name=f"render_{scelta.lower().replace(' ','_')}.png",
+                    mime="image/png")
 
-        if st.session_state.get("show_viewer"):
-            if show_all_3d:
-                viewer_3d_navigabile(st.session_state.risultati, height=viewer_height)
-            else:
-                scelta_v = st.selectbox("Area da visualizzare", names, key="scelta_v")
-                idx_v = names.index(scelta_v)
-                viewer_3d_navigabile([st.session_state.risultati[idx_v]], height=viewer_height)
+        if render_tutti:
+            cols = st.columns(2)
+            for i, r in enumerate(st.session_state.risultati):
+                with st.spinner(f"Rendering {r['nome']}..."):
+                    buf = genera_rendering(r, r["calc"])
+                    with cols[i % 2]:
+                        st.image(buf, caption=r["nome"], use_column_width=True)
+                        buf.seek(0)
+                        st.download_button(
+                            f"⬇️ Scarica {r['nome']}", data=buf,
+                            file_name=f"render_{i}.png", mime="image/png",
+                            key=f"rend_dl_{i}")
+
+        if export_gltf:
+            with st.spinner("Generazione scena glTF..."):
+                gltf_buf = export_gltf_scene(st.session_state.risultati)
+                st.download_button("⬇️ Scarica .glTF", data=gltf_buf,
+                    file_name=f"{num_tav}_scene.gltf", mime="model/gltf+json")
+                st.success("✅ Scena glTF pronta per Blender/Unreal Engine!")
+                st.info(
+                    "**Come usare in Blender:**\n"
+                    "1. File → Import → glTF 2.0\n"
+                    "2. Assegna materiali PBR alle mesh\n"
+                    "3. Render → Cycles → 256 samples\n"
+                    "4. Output → PNG 4K"
+                )
 
         st.markdown("---")
-        st.markdown("#### 🎨 Rendering statico (PNG)")
-        scelta = st.selectbox("Seleziona area", names)
-        c1, c2, c3 = st.columns(3)
-        # ... resto del codice rendering PNG esistente ...
-
+        st.markdown("#### 📝 Script Blender fotorealistico")
         with st.expander("Mostra script `render_blender.py`"):
             st.code('''
 import bpy, os
@@ -1700,26 +1698,56 @@ output_path = "/path/output/render_fotorealistico.png"
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=gltf_path)
 
+# Luce HDRI
 world = bpy.context.scene.world
 world.use_nodes = True
 bg = world.node_tree.nodes["Background"]
 bg.inputs[1].default_value = 0.3
 
+# Luci area (ogni lampada della scena)
 for obj in bpy.context.scene.objects:
-    if "Lamp" in obj.name:
-        bpy.ops.object.light_add(type="AREA", location=obj.location)
-        light = bpy.context.object
-        light.data.energy = 500
-        light.data.size = 0.3
+    if "Lamp_" in obj.name:
+        light_data = bpy.data.lights.new(name=obj.name+"_light", type="AREA")
+        light_data.energy = 1200
+        light_data.color  = (1.0, 0.95, 0.8)   # 3000K warm
+        light_data.size   = 0.17
+        light_obj = bpy.data.objects.new(obj.name+"_light", light_data)
+        light_obj.location = obj.location
+        bpy.context.collection.objects.link(light_obj)
 
+# Pavimento materiale PBR
+for obj in bpy.context.scene.objects:
+    if obj.type == "MESH":
+        mat = bpy.data.materials.new(name="PBR_Floor")
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes["Principled BSDF"]
+        bsdf.inputs["Base Color"].default_value  = (0.22,0.22,0.24,1)
+        bsdf.inputs["Roughness"].default_value   = 0.7
+        bsdf.inputs["Metallic"].default_value    = 0.0
+        obj.data.materials.append(mat)
+
+# Camera
+cam_data = bpy.data.cameras.new("Camera")
+cam_obj  = bpy.data.objects.new("Camera", cam_data)
+bpy.context.collection.objects.link(cam_obj)
+bpy.context.scene.camera = cam_obj
+cam_obj.location       = (8, -10, 5)
+cam_obj.rotation_euler = (1.1, 0, 0.8)
+
+# Render Cycles
 scene = bpy.context.scene
-scene.render.engine = "CYCLES"
-scene.cycles.samples = 256
-scene.render.resolution_x = 3840
-scene.render.resolution_y = 2160
-scene.render.filepath = output_path
+scene.render.engine          = "CYCLES"
+scene.cycles.samples         = 512
+scene.cycles.use_denoising   = True
+scene.render.resolution_x    = 1920
+scene.render.resolution_y    = 1080
+scene.render.filepath        = output_path
+scene.render.image_settings.file_format = "PNG"
+
 bpy.ops.render.render(write_still=True)
+print("✅ Render completato:", output_path)
 ''', language="python")
+            st.caption("Lancia con: `blender --background --python render_blender.py`")
 
 # ============================================================
 # TAB 6 — PREVENTIVO
@@ -1802,11 +1830,13 @@ with tab7:
         st.markdown("""
 La relazione completa include in un **unico PDF**:
 - 📋 Frontespizio con logo e dati progetto
+- 📝 Relazione descrittiva (UNI 11630:2016)
 - 📐 Tavola A3 planimetria + posizionamento
 - ✅ Schede di verifica per ogni area
 - 🎨 Rendering 3D di ogni area
 - 💶 Preventivo economico dettagliato
 """)
+
         mg_r  = st.session_state.get("sl_mg",  35)
         sg_r  = st.session_state.get("sl_sg",  12)
         os_r  = st.session_state.get("sl_os",   4)
@@ -1838,6 +1868,7 @@ La relazione completa include in un **unico PDF**:
                     st.balloons()
                 except Exception as e:
                     st.error(f"Errore generazione: {e}")
+                    st.info("Prova a installare PyPDF2: pip install PyPDF2")
 
         st.markdown("---")
         st.markdown("#### 📎 Export separati")
@@ -1904,7 +1935,7 @@ with tab8:
         st.markdown("#### 📂 Carica progetto salvato")
         progetti = load_projects_list(st.session_state.username)
         if not progetti:
-            st.info("Nessun progetto salvato. Salva prima un progetto.")
+            st.info("Nessun progetto salvato.")
         else:
             proj_options = {f"{p[1]} — {p[2]} ({p[3][:10]})": p[0] for p in progetti}
             proj_sel = st.selectbox("Seleziona progetto", list(proj_options.keys()), key="proj_sel")
@@ -1914,7 +1945,7 @@ with tab8:
                     try:
                         pid  = proj_options[proj_sel]
                         data = load_project_data(pid)
-                        if 
+                        if data:
                             st.session_state.aree      = data["aree"]
                             st.session_state.risultati = data["risultati"] if data["risultati"] else []
                             if data["prev"]:
