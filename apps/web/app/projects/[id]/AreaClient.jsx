@@ -86,7 +86,11 @@ async function loadAreas() {
     setName("");
     await loadAreas();
   }
-
+const designer_area_bias = (
+  project?.designer_area_bias ??
+  project?.stylepack?.designer_area_bias ??
+  {}
+);
   async function generateConcepts(priority = "mix") {
     setMsg("");
     if (!areas.length) return setMsg("Aggiungi prima almeno un'area.");
