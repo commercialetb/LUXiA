@@ -86,11 +86,7 @@ async function loadAreas() {
     setName("");
     await loadAreas();
   }
-const designer_area_bias = (
-  project?.designer_area_bias ??
-  project?.stylepack?.designer_area_bias ??
-  {}
-);
+
   async function generateConcepts(priority = "mix") {
     setMsg("");
     if (!areas.length) return setMsg("Aggiungi prima almeno un'area.");
@@ -109,6 +105,10 @@ try {
   project_style_pack = null;
 }
 
+// Area-DNA bias (optional). Keep a safe default to avoid engine/runtime errors.
+// Expected shape (example): { "Ufficio VDT": {"comfort":1.1,"efficiency":1.0,"architectural":0.95}, ... }
+const designer_area_bias = project_style_pack?.designer_area_bias || {};
+
 // Fetch Designer Brain profile (team DNA) for active style
 let designer_stats = null;
 if (project.active_style_id) {
@@ -124,6 +124,7 @@ if (project.active_style_id) {
       const payload = {
         areas: areas.map(a => ({ name: a.name, tipo_locale: a.tipo_locale, superficie_m2: Number(a.superficie_m2), altezza_m: Number(a.altezza_m) })),
         style_tokens,
+        project_style_pack,
         allowed_brands: projectBrands,
         catalog,
         priority,

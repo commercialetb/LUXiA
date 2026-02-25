@@ -1,300 +1,433 @@
-# apps/engine/engine_api.py
-from __future__ import annotations
-
 import os
-import json
-import math
-import random
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Optional, Dict, Any, List, Tuple
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+import math
+import json
 
-# -----------------------------
-# App
-# -----------------------------
-app = FastAPI(
-    title="LuxIA Engine API (MVP)",
-    version="1.0",
-)
+APP_TOKEN = os.getenv("LUXIA_TOKEN", "dev-local-token")
 
-# CORS: per chiamate da Vercel (e in generale webapp)
+app = FastAPI(title="LuxIA Engine API (MVP)", version="1.0")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # per MVP; quando vai in prod metti dominio Vercel specifico
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------
-# Auth (semplice)
-# -----------------------------
 def auth(x_luxia_token: Optional[str]):
-    # Se non imposti LUXIA_ENGINE_TOKEN, auth è “open” (utile MVP)
-    expected = os.getenv("LUXIA_ENGINE_TOKEN", "").strip()
-    if expected:
-        if not x_luxia_token or x_luxia_token.strip() != expected:
-            raise HTTPException(status_code=401, detail="Unauthorized (bad X-LuxIA-Token)")
+    if x_luxia_token != APP_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-
-# -----------------------------
-# Requirements base (MVP)
-# -----------------------------
-REQUISITI: Dict[str, Dict[str, Any]] = {
-    "Ufficio VDT": {"lux": 500, "ugr_max": 19, "ra_min": 80},
-    "Sala riunioni": {"lux": 500, "ugr_max": 19, "ra_min": 80},
-    "Corridoio": {"lux": 100, "ugr_max": 22, "ra_min": 80},
-    "Ufficio": {"lux": 300, "ugr_max": 22, "ra_min": 80},
-    "Open space": {"lux": 500, "ugr_max": 19, "ra_min": 80},
+# Minimal normative targets (extend later)
+REQUISITI = {
+    "Ufficio VDT":   {"lux": 500, "ugr_max": 19, "ra_min": 80, "uni_min": 0.60, "CU": 0.60, "MF": 0.80},
+    "Sala riunioni": {"lux": 500, "ugr_max": 19, "ra_min": 80, "uni_min": 0.60, "CU": 0.60, "MF": 0.80},
+    "Corridoio":     {"lux": 100, "ugr_max": 28, "ra_min": 40, "uni_min": 0.40, "CU": 0.50, "MF": 0.80},
+    "Reception":     {"lux": 300, "ugr_max": 22, "ra_min": 80, "uni_min": 0.60, "CU": 0.60, "MF": 0.80},
+    "Archivio":      {"lux": 200, "ugr_max": 25, "ra_min": 80, "uni_min": 0.40, "CU": 0.55, "MF": 0.80},
+    "Bagno/WC":      {"lux": 200, "ugr_max": 25, "ra_min": 80, "uni_min": 0.40, "CU": 0.55, "MF": 0.80},
+    "Ingresso":      {"lux": 200, "ugr_max": 22, "ra_min": 80, "uni_min": 0.40, "CU": 0.55, "MF": 0.80},
+    "Mensa/Ristoro": {"lux": 200, "ugr_max": 22, "ra_min": 80, "uni_min": 0.40, "CU": 0.55, "MF": 0.80},
+    "Locale tecnico":{"lux": 200, "ugr_max": 25, "ra_min": 60, "uni_min": 0.40, "CU": 0.50, "MF": 0.80},
 }
 
-# -----------------------------
-# Style helpers
-# -----------------------------
-def _pack_params(project_style_pack: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Uniforma i parametri dello style pack.
-    """
-    return {
-        "cct_default": int(project_style_pack.get("cct_default") or 3000),
-        "density_bias": float(project_style_pack.get("density_bias") or 1.0),
-        "uniformity_target": float(project_style_pack.get("uniformity_target") or 0.60),
-        "accent_ratio": float(project_style_pack.get("accent_ratio") or 0.20),
-        "contrast": str(project_style_pack.get("contrast") or "Medium"),
-        "theme": str(project_style_pack.get("theme") or "Clean Office"),
-    }
+def _pack_bias(style_pack: Dict[str, Any]) -> Dict[str, float]:
+    sp = style_pack or {}
+    contrast = (sp.get('contrast_level') or 'medium')
+    accent = float(sp.get('accent_ratio') or 0)
+    b = {'comfort': 1.0, 'efficiency': 1.0, 'architectural': 1.0}
+    if contrast == 'high' or accent >= 0.25:
+        b['architectural'] *= 1.18
+    if contrast == 'low':
+        b['comfort'] *= 1.10
+    if float(sp.get('uniformity_target') or 0) >= 0.6:
+        b['efficiency'] *= 1.08
+    return b
 
-def _style_bias(style_tokens: Dict[str, Any]) -> Dict[str, float]:
-    # MVP: se non hai tokens → neutro
-    # puoi “spingere” un concept in base a token/tag futuri
+
+
+def _pack_params(style_pack: Dict[str, Any]) -> Dict[str, Any]:
+    sp = style_pack or {}
+    def f(key, default):
+        try:
+            v = sp.get(key, default)
+            if v is None: return default
+            return float(v)
+        except Exception:
+            return float(default)
+    def i(key, default):
+        try:
+            v = sp.get(key, default)
+            if v is None: return default
+            return int(v)
+        except Exception:
+            return int(default)
+
     return {
-        "comfort": float(style_tokens.get("comfort_bias") or 1.0),
-        "efficiency": float(style_tokens.get("efficiency_bias") or 1.0),
-        "architectural": float(style_tokens.get("architectural_bias") or 1.0),
+        "cct_default": i("cct_default", 0) or None,
+        "density_bias": max(0.6, min(1.5, f("density_bias", 1.0))),
+        "uniformity_target": max(0.2, min(0.9, f("uniformity_target", 0.6))),
+        "accent_ratio": max(0.0, min(0.6, f("accent_ratio", 0.2))),
+        "contrast_level": (sp.get("contrast_level") or "medium"),
+        "presentation_theme": (sp.get("presentation_theme") or "clean_office"),
+        "mood": (sp.get("mood") or None),
     }
 
 def _team_bias(designer_stats: Dict[str, Any]) -> Dict[str, float]:
-    # MVP: se non hai stats → neutro
-    return {
-        "comfort": float(designer_stats.get("comfort") or 1.0),
-        "efficiency": float(designer_stats.get("efficiency") or 1.0),
-        "architectural": float(designer_stats.get("architectural") or 1.0),
-    }
+    concept = (designer_stats or {}).get('concept', {}) if isinstance(designer_stats, dict) else {}
+    c = float(concept.get('comfort', 0) or 0)
+    e = float(concept.get('efficiency', 0) or 0)
+    a = float(concept.get('architectural', 0) or 0)
+    if (c + e + a) <= 0:
+        return {'comfort': 1.0, 'efficiency': 1.0, 'architectural': 1.0}
+    mx = max(c, e, a, 1.0)
+    return {'comfort': 0.8 + 0.7*(c/mx), 'efficiency': 0.8 + 0.7*(e/mx), 'architectural': 0.8 + 0.7*(a/mx)}
+
 
 def _area_bias(designer_area_bias: Dict[str, Any]) -> Dict[str, float]:
-    # designer_area_bias può arrivare vuoto
+    """Bias based on concept choices for this specific area type."""
+    dab = designer_area_bias or {}
+    concept = dab.get("concept_area", {}) if isinstance(dab, dict) else {}
+    c = float(concept.get("comfort", 0) or 0)
+    e = float(concept.get("efficiency", 0) or 0)
+    a = float(concept.get("architectural", 0) or 0)
+    if (c + e + a) <= 0:
+        return {"comfort": 1.0, "efficiency": 1.0, "architectural": 1.0}
+    mx = max(c, e, a, 1.0)
+    return {"comfort": 0.85 + 0.6*(c/mx), "efficiency": 0.85 + 0.6*(e/mx), "architectural": 0.85 + 0.6*(a/mx)}
+
+def _style_bias(style_tokens: Dict[str, Any]) -> Dict[str, float]:
+    mood = (style_tokens or {}).get('mood_hint')
+
+    votes = (style_tokens or {}).get("concept_votes", {}) if isinstance(style_tokens, dict) else {}
+    c = float(votes.get("comfort", 0) or 0)
+    e = float(votes.get("efficiency", 0) or 0)
+    a = float(votes.get("architectural", 0) or 0)
+    if (c + e + a) <= 0:
+        return {"comfort": 1.0, "efficiency": 1.0, "architectural": 1.0}
+    mx = max(c, e, a, 1.0)
+    return {"comfort": 0.8 + 0.7*(c/mx), "efficiency": 0.8 + 0.7*(e/mx), "architectural": 0.8 + 0.7*(a/mx)}
+
+def _ideal_spec(area: Dict[str, Any], concept_type: str, req: Dict[str, Any], constraints: str = "") -> Dict[str, Any]:
+    tipo = (area.get("tipo_locale") or "Ufficio VDT").lower()
+    c_low = (constraints or "").lower()
+
+    if "4000" in c_low:
+        cct = "4000K"
+    elif "3000" in c_low:
+        cct = "3000K"
+    else:
+        cct = "3000K" if concept_type == "comfort" else ("4000K" if concept_type == "efficiency" else "3000K/4000K")
+
+    if "solo incasso" in c_low or "incasso" in c_low:
+        mounting = "recessed"
+    elif "sospensione" in c_low:
+        mounting = "pendant"
+    else:
+        mounting = "recessed" if ("ufficio" in tipo or "corridoio" in tipo) else "mixed"
+
+    distribution = "wide" if concept_type != "architectural" else "mixed (ambient+accent)"
+    # v22: style pack influences optics/distribution
+    cl = str(pack_params.get('contrast_level') or 'medium')
+    ar = float(pack_params.get('accent_ratio') or 0.2)
+    if cl == 'high' or ar >= 0.25:
+        distribution = "mixed (ambient+accent)"
+    elif cl == 'low' and ar <= 0.15:
+        distribution = "wide"
+    if "accent" in c_low or "vetrina" in c_low:
+        distribution = "mixed (ambient+accent)"
+
+    target_ugr = int(req["ugr_max"])
+    if "ugr16" in c_low or "ugr 16" in c_low:
+        target_ugr = min(target_ugr, 16)
+
     return {
-        "comfort": float(designer_area_bias.get("comfort") or 1.0),
-        "efficiency": float(designer_area_bias.get("efficiency") or 1.0),
-        "architectural": float(designer_area_bias.get("architectural") or 1.0),
+        "required_lux": float(req["lux"]),
+        "target_ugr": target_ugr,
+        "min_ra": int(req["ra_min"]),
+        "uni_min": float(req.get("uni_min") or 0.4),
+        "preferred_cct": cct,
+        "distribution": distribution,
+        "mounting": mounting,
+        "constraints": constraints or "",
     }
 
-# -----------------------------
-# Catalog filtering
-# -----------------------------
-def _filter_candidates(
-    catalog: List[Dict[str, Any]],
-    allowed_brands: List[str],
-    spec: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """
-    Filtra catalogo in base a brand e minimi requisiti.
-    Catalog item atteso (MVP): {brand, model, flux_lm, watt, cri, ugr, optics, ...}
-    """
-    out = []
-    lux = float(spec.get("required_lux") or 300)
-    ra_min = int(spec.get("min_ra") or 80)
-    ugr_max = float(spec.get("max_ugr") or 22)
+def _lumen_method(area_m2: float, target_lux: float, CU: float, MF: float, flux_lm: float) -> Tuple[int, float]:
+    area_m2 = max(float(area_m2 or 1.0), 1.0)
+    CU = max(float(CU or 0.1), 0.1)
+    MF = max(float(MF or 0.1), 0.1)
+    flux_lm = max(float(flux_lm or 1.0), 1.0)
+    n = int((target_lux * area_m2) / (CU * MF * flux_lm) + 0.999999)
+    n = max(n, 1)
+    em = (n * flux_lm * CU * MF) / area_m2
+    return n, round(em, 1)
 
-    for it in (catalog or []):
-        b = (it.get("brand") or "").strip()
-        if allowed_brands and b and b not in allowed_brands:
-            continue
-
-        cri = int(it.get("cri") or it.get("ra") or 80)
-        ugr = float(it.get("ugr") or 22)
-        flux = float(it.get("flux_lm") or 0)
-        if cri < ra_min:
-            continue
-        if ugr > ugr_max:
-            continue
-        # non imposto una soglia flux rigida, ma evito “zero”
-        if flux <= 0:
-            continue
-
-        out.append(it)
-
-    # se non hai catalogo / non matcha nulla → modalità brand-neutral (out vuoto)
-    return out
-
-# -----------------------------
-# Layout & calc proxy
-# -----------------------------
-def _dims_from_area(area_m2: float) -> Tuple[float, float]:
-    # MVP: supponiamo locale ~rettangolare
-    W = math.sqrt(max(area_m2, 1.0))
-    L = max(area_m2, 1.0) / W
-    return (round(L, 2), round(W, 2))
-
-def _grid_coords(L: float, W: float, n: int) -> List[List[float]]:
-    if n <= 0:
+def _filter_candidates(catalog: List[Dict[str, Any]], allowed_brands: List[str], spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not allowed_brands:
         return []
-    cols = max(1, int(math.ceil(math.sqrt(n))))
-    rows = max(1, int(math.ceil(n / cols)))
-    dx = L / (cols + 1)
-    dy = W / (rows + 1)
-    coords = []
-    k = 0
-    for r in range(rows):
-        for c in range(cols):
-            if k >= n:
-                break
-            coords.append([round((c + 1) * dx, 3), round((r + 1) * dy, 3)])
-            k += 1
-    return coords
+    req_ra = int(spec.get("min_ra") or 80)
+    req_ugr = int(spec.get("target_ugr") or 19)
 
-def _estimate_n(area_m2: float, target_lux: float, lum_flux: float, util: float = 0.55, maint: float = 0.80) -> int:
-    # Lumen method proxy (molto semplificato)
-    needed_lm = target_lux * area_m2
-    per_lum = max(lum_flux * util * maint, 1.0)
-    return max(1, int(math.ceil(needed_lm / per_lum)))
+    def ok(x):
+        if x.get("brand") not in allowed_brands:
+            return False
+        if int(x.get("cri") or 80) < req_ra:
+            return False
+        ugr = x.get("ugr")
+        if ugr is not None and int(ugr) > req_ugr:
+            return False
+        return True
 
-def _uniformity_proxy(n: int, area_m2: float) -> float:
-    # Proxy: più apparecchi, più uniformità (semplificatissimo)
-    base = 0.35 + 0.08 * math.log(max(n, 1))
-    penalty = 0.05 * math.log(max(area_m2, 1.0))
-    return float(max(0.30, min(0.85, base - penalty)))
+    return [x for x in catalog if ok(x)]
 
-def _wm2_proxy(n: int, watt: float, area_m2: float) -> float:
-    return round((n * max(watt, 0.0)) / max(area_m2, 1.0), 2)
+def _score_candidate(x: Dict[str, Any], concept_type: str, priority: str) -> float:
+    ugr = x.get("ugr")
+    cri = float(x.get("cri") or 80)
+    flux = float(x.get("flux_lm") or 1)
+    watt = float(x.get("watt") or 1)
+    eff = flux / max(watt, 1.0)
+    dim = 1.0 if x.get("dimmable", True) else 0.0
 
-# -----------------------------
-# Spec builder (FIX pack_params)
-# -----------------------------
-def _ideal_spec(
-    area: Dict[str, Any],
-    concept_type: str,
-    req: Dict[str, Any],
-    constraints: str,
-    pack_params: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Crea una “spec” target per concept.
-    FIX: usa pack_params passato esplicitamente.
-    """
-    required_lux = float(req.get("lux") or 300)
-    max_ugr = float(req.get("ugr_max") or 22)
-    min_ra = int(req.get("ra_min") or 80)
-
-    # bias per concept
-    density_bias = float(pack_params.get("density_bias") or 1.0)
-    uniformity_target = float(pack_params.get("uniformity_target") or 0.60)
+    if priority == "norms":
+        s = (100 - (ugr if ugr is not None else 25)) * 2.2 + cri * 0.8 + eff * 0.2 + dim * 5.0
+    elif priority == "efficiency":
+        s = eff * 2.2 + dim * 5.0 + cri * 0.2 + (100 - (ugr if ugr is not None else 25)) * 0.3
+    else:
+        s = eff * 1.0 + cri * 0.4 + (100 - (ugr if ugr is not None else 25)) * 0.8 + dim * 8.0
 
     if concept_type == "comfort":
-        required_lux *= 1.05
-        uniformity_target = min(0.80, uniformity_target + 0.08)
-    elif concept_type == "efficiency":
-        required_lux *= 0.95
-        density_bias *= 0.92
+        s += (100 - (ugr if ugr is not None else 25)) * 0.8 + cri * 0.2
     elif concept_type == "architectural":
-        required_lux *= 1.00
-        # qui potresti spingere accent ratio, scene ecc.
+        s += dim * 10.0 + flux * 0.01
+    return s
 
-    return {
-        "required_lux": round(required_lux, 1),
-        "max_ugr": max_ugr,
-        "min_ra": min_ra,
-        "density_bias": round(density_bias, 3),
-        "uniformity_target": round(uniformity_target, 3),
-        "cct_default": int(pack_params.get("cct_default") or 3000),
-        "constraints": constraints or "",
-        "area_name": area.get("name") or "Area",
-        "tipo_locale": area.get("tipo_locale") or "Ufficio VDT",
-    }
+def _dims_from_area(area_m2: float, tipo_locale: str) -> Tuple[float, float]:
+    a = max(float(area_m2 or 1.0), 1.0)
+    t = (tipo_locale or "").lower()
+    if "corridoio" in t:
+        w = max(1.5, math.sqrt(a / 4.0))
+        l = a / w
+        return (l, w)
+    s = math.sqrt(a)
+    return (s, s)
 
-# -----------------------------
-# Optimizer (MVP)
-# -----------------------------
-def _pick_best_luminaire(candidates: List[Dict[str, Any]], concept_type: str) -> Optional[Dict[str, Any]]:
-    if not candidates:
-        return None
+def _layout_coords(n: int, L: float, W: float, layout: str = "grid", uniformity_target: float = 0.6) -> List[List[float]]:
+    n = max(int(n), 1)
+    L = max(float(L), 1.0)
+    W = max(float(W), 1.0)
+    coords: List[List[float]] = []
 
-    # MVP ranking
-    def score(it: Dict[str, Any]) -> float:
-        flux = float(it.get("flux_lm") or 0)
-        watt = float(it.get("watt") or 1)
-        cri = float(it.get("cri") or 80)
-        ugr = float(it.get("ugr") or 22)
-        eff = flux / max(watt, 1e-6)
+    if layout == "linear":
+        u = max(0.2, min(0.9, float(uniformity_target or 0.6)))
+        margin = max(0.5, min(1.6, W * 0.22 * (1.0 + (u-0.5)*0.9)))
+        y = W / 2.0
+        if n == 1:
+            coords = [[L/2.0, y]]
+        else:
+            x0 = margin
+            x1 = L - margin
+            step = (x1 - x0) / (n - 1)
+            coords = [[x0 + i * step, y] for i in range(n)]
+        return [[round(x, 2), round(y, 2)] for x, y in coords]
 
-        s = 0.0
-        if concept_type == "efficiency":
-            s += 1.5 * eff
-            s += 0.2 * cri
-            s -= 0.3 * ugr
-        elif concept_type == "comfort":
-            s += 0.5 * eff
-            s += 0.5 * cri
-            s -= 1.0 * ugr
-        else:  # architectural
-            s += 0.9 * eff
-            s += 0.4 * cri
-            s -= 0.5 * ugr
-        return s
+    if layout == "perimeter+center" and n >= 5:
+        u = max(0.2, min(0.9, float(uniformity_target or 0.6)))
+        mx = max(0.6, min(1.8, L*0.10 * (1.0 + (u-0.5)*1.0)))
+        my = max(0.6, min(1.8, W*0.10 * (1.0 + (u-0.5)*1.0)))
+        base = [
+            [mx, my],
+            [L-mx, my],
+            [L-mx, W-my],
+            [mx, W-my],
+            [L/2.0, W/2.0],
+        ]
+        coords.extend(base)
+        remaining = n - len(coords)
+        if remaining > 0:
+            g = int(math.ceil(math.sqrt(remaining)))
+            gx = max(1, g); gy = max(1, g)
+            xs = [mx + (L-2*mx) * (i+0.5)/gx for i in range(gx)]
+            ys = [my + (W-2*my) * (j+0.5)/gy for j in range(gy)]
+            for x in xs:
+                for y in ys:
+                    if len(coords) < n:
+                        coords.append([x, y])
+        return [[round(x, 2), round(y, 2)] for x, y in coords[:n]]
 
-    return sorted(candidates, key=score, reverse=True)[0]
+    gx = int(math.ceil(math.sqrt(n * (L / W)))) if W > 0 else int(math.ceil(math.sqrt(n)))
+    gx = max(1, gx)
+    gy = int(math.ceil(n / gx))
+    gy = max(1, gy)
 
-def _solve(area_m2: float, h_m: float, spec: Dict[str, Any], lum: Optional[Dict[str, Any]], req: Dict[str, Any], concept_type: str) -> Dict[str, Any]:
-    target_lux = float(spec.get("required_lux") or req.get("lux") or 300)
-    density_bias = float(spec.get("density_bias") or 1.0)
-    uniformity_target = float(spec.get("uniformity_target") or 0.60)
+    u = max(0.2, min(0.9, float(uniformity_target or 0.6)))
+    mx = max(0.7, min(2.0, min(L, W) * 0.10 * (1.0 + (u-0.5)*1.2)))
+    my = mx
+    xs = [mx + (L - 2*mx) * (i+0.5)/gx for i in range(gx)]
+    ys = [my + (W - 2*my) * (j+0.5)/gy for j in range(gy)]
+    for y in ys:
+        for x in xs:
+            if len(coords) < n:
+                coords.append([x, y])
 
-    L, W = _dims_from_area(area_m2)
+    return [[round(x, 2), round(y, 2)] for x, y in coords]
 
-    if lum:
-        flux = float(lum.get("flux_lm") or 1500)
-        watt = float(lum.get("watt") or 15)
-        n0 = _estimate_n(area_m2, target_lux, flux)
-        n = max(1, int(math.ceil(n0 * density_bias)))
-        Em = round((n * flux * 0.55 * 0.80) / max(area_m2, 1.0), 1)
-        u0 = round(_uniformity_proxy(n, area_m2), 2)
-        wm2 = _wm2_proxy(n, watt, area_m2)
-    else:
-        # brand-neutral fallback
-        n = max(4, int(math.ceil(area_m2 / 4.0)))
-        Em = round(target_lux * 0.85, 1)
-        u0 = round(_uniformity_proxy(n, area_m2), 2)
-        wm2 = round(7.0, 2)
+def _uniformity_proxy(coords: List[List[float]], L: float, W: float, h_m: float, flux_lm: float, CU: float, MF: float) -> Dict[str, float]:
+    if not coords:
+        return {"emin": 0.0, "emax": 0.0, "emean": 0.0, "u0": 0.0}
 
-    coords = _grid_coords(L, W, n)
-    return {
-        "n": n,
-        "Em": Em,
-        "u0": u0,
-        "wm2": wm2,
-        "layout": "grid",
-        "coords": coords,
-        "dims": {"L": L, "W": W, "H": float(h_m)},
-        "targets": {"lux": target_lux, "u0": uniformity_target},
-        "autopilot": {"priority": "mix", "iterations": 1, "status": "mvp"},
-    }
+    L = max(L, 1.0); W = max(W, 1.0)
+    h = max(float(h_m or 2.7), 2.2)
 
-def _optimize(
-    area_m2: float,
-    tipo: str,
-    h_m: float,
-    req: Dict[str, Any],
-    spec: Dict[str, Any],
-    candidates: List[Dict[str, Any]],
-    concept_type: str,
-    priority: str,
-) -> Dict[str, Any]:
-    lum = _pick_best_luminaire(candidates, concept_type)
-    calc = _solve(area_m2, h_m, spec, lum, req, concept_type)
-    calc["autopilot"]["priority"] = priority
-    return {"luminaire": lum, "calc": calc}
+    nx, ny = (12, 8) if (L / max(W, 1e-6)) > 2.0 else (10, 10)
+    xs = [L * (i + 0.5) / nx for i in range(nx)]
+    ys = [W * (j + 0.5) / ny for j in range(ny)]
+
+    vals = []
+    K = (flux_lm / (2.0 * math.pi)) * CU * MF * 0.65
+
+    for y in ys:
+        for x in xs:
+            e = 0.0
+            for lx, ly in coords:
+                dx = x - lx
+                dy = y - ly
+                d = math.sqrt(dx*dx + dy*dy + h*h)
+                ct = h / d
+                e += K * (ct / (d*d))
+            vals.append(e)
+
+    emin = float(min(vals))
+    emax = float(max(vals))
+    emean = float(sum(vals) / len(vals)) if vals else 0.0
+    u0 = float(emin / emean) if emean > 0 else 0.0
+    return {"emin": round(emin, 2), "emax": round(emax, 2), "emean": round(emean, 2), "u0": round(u0, 2)}
+
+def _choose_layout(tipo_locale: str, concept_type: str, constraints: str) -> str:
+    t = (tipo_locale or "").lower()
+    c = (constraints or "").lower()
+    if "corridoio" in t:
+        return "linear"
+    if "perimetr" in c:
+        return "perimeter+center"
+    if concept_type == "architectural" and ("reception" in t):
+        return "perimeter+center"
+    return "grid"
+
+def _scene_presets(tipo_locale: str) -> List[Dict[str, Any]]:
+    t = (tipo_locale or "").lower()
+    if "ufficio" in t:
+        return [
+            {"id":"work", "name":"Work", "channels":{"ambient":1.0, "accent":0.0}},
+            {"id":"focus", "name":"Focus", "channels":{"ambient":1.0, "accent":0.3}},
+            {"id":"soft", "name":"Soft", "channels":{"ambient":0.45, "accent":0.10}},
+        ]
+    if "riunioni" in t or "meeting" in t:
+        return [
+            {"id":"meeting", "name":"Meeting", "channels":{"ambient":0.9, "accent":0.2}},
+            {"id":"presentation", "name":"Presentation", "channels":{"ambient":0.35, "accent":0.75}},
+            {"id":"cleaning", "name":"Cleaning", "channels":{"ambient":1.0, "accent":0.3}},
+        ]
+    if "corridoio" in t:
+        return [
+            {"id":"normal", "name":"Normal", "channels":{"ambient":0.7}},
+            {"id":"night", "name":"Night", "channels":{"ambient":0.25}},
+            {"id":"emergency", "name":"Emergency", "channels":{"ambient":1.0}},
+        ]
+    return [
+        {"id":"standard", "name":"Standard", "channels":{"ambient":0.8, "accent":0.2}},
+        {"id":"accent", "name":"Accent", "channels":{"ambient":0.35, "accent":0.85}},
+        {"id":"soft", "name":"Soft", "channels":{"ambient":0.4, "accent":0.1}},
+    ]
+
+def _optimize(area_m2: float, tipo_locale: str, h_m: float, req: Dict[str, Any], spec: Dict[str, Any],
+              candidates: List[Dict[str, Any]], concept_type: str, priority: str) -> Dict[str, Any]:
+    target_lux = float(spec["required_lux"])
+    CU, MF = float(req["CU"]), float(req["MF"])
+    uni_min = float(spec.get("uni_min") or req.get("uni_min") or 0.4)
+
+    L, W = _dims_from_area(area_m2, tipo_locale)
+    layout = _choose_layout(tipo_locale, concept_type, spec.get("constraints") or "")
+
+    ranked = sorted(candidates, key=lambda x: _score_candidate(x, concept_type, priority), reverse=True)
+
+    def pack_solution(lum, flux, watt, ugr, cri, status, iterations):
+        eff_target = float(target_lux) * float(pack_params.get('density_bias') or 1.0)
+        n, Em = _lumen_method(area_m2, eff_target, CU, MF, flux)
+        coords = _layout_coords(n, L, W, layout, uniformity_target=float(pack_params.get('uniformity_target') or 0.6))
+        uni = _uniformity_proxy(coords, L, W, h_m, flux, CU, MF)
+
+        Wt = round(n * watt, 1)
+        wm2 = round(Wt / max(area_m2, 1.0), 2)
+
+        ok_lux = Em >= target_lux * 0.95
+        ok_ra  = int(cri) >= int(spec.get("min_ra") or req["ra_min"])
+        ok_ugr = True if ugr is None else (int(ugr) <= int(spec.get("target_ugr") or req["ugr_max"]))
+        ok_uni = float(uni.get("u0") or 0.0) >= uni_min
+
+        return {
+            "luminaire": lum,
+            "calc": {
+                "n": n, "Em": Em, "Et": target_lux,
+                "W": Wt, "wm2": wm2,
+                "ok_lux": ok_lux, "ok_ra": ok_ra, "ok_ugr": ok_ugr, "ok_uni": ok_uni,
+                "target_ugr": int(spec.get("target_ugr") or req["ugr_max"]),
+                "min_ra": int(spec.get("min_ra") or req["ra_min"]),
+                "uni_min": round(uni_min, 2),
+                "u0": uni.get("u0"),
+                "emin_proxy": uni.get("emin"),
+                "emean_proxy": uni.get("emean"),
+                "layout": layout,
+                "dims": {"L": round(L, 2), "W": round(W, 2), "h": round(float(h_m or 2.7), 2)},
+                "coords": coords,
+                "scenes": _scene_presets(tipo_locale),
+                "autopilot": {"priority": priority, "iterations": iterations, "status": status},
+            }
+        }
+
+    if not ranked:
+        return pack_solution(None, 3000.0, 25.0, None, int(spec.get("min_ra") or req["ra_min"]), "brand-neutral", 1)
+
+    best = None
+    for i, lum in enumerate(ranked[:12], start=1):
+        flux = float(lum.get("flux_lm") or 3000)
+        watt = float(lum.get("watt") or 25)
+        ugr = lum.get("ugr")
+        cri = int(lum.get("cri") or 80)
+
+        sol = pack_solution(lum, flux, watt, ugr, cri, "tried", i)
+        calc = sol["calc"]
+        feasible = bool(calc["ok_lux"] and calc["ok_ra"] and calc["ok_ugr"] and calc["ok_uni"])
+
+        if priority == "efficiency":
+            obj = -float(calc["wm2"])
+        elif priority == "norms":
+            u0 = float(calc.get("u0") or 0.0)
+            obj = (1000.0 if feasible else 0.0) + u0 * 100.0 + (100 - (ugr if ugr is not None else 25)) * 1.5 + cri * 0.2
+        else:
+            u0 = float(calc.get("u0") or 0.0)
+            obj = _score_candidate(lum, concept_type, priority) + u0 * 50.0 - float(calc["wm2"])
+
+        if best is None:
+            best = (obj, feasible, sol)
+        else:
+            if feasible and not best[1]:
+                best = (obj, feasible, sol)
+            elif feasible == best[1] and obj > best[0]:
+                best = (obj, feasible, sol)
+
+        if priority == "norms" and feasible and i <= 3:
+            break
+
+    if best:
+        best_sol = best[2]
+        best_sol["calc"]["autopilot"]["status"] = "feasible" if best[1] else "best-effort"
+        return best_sol
+
+    return pack_solution(ranked[0], 3000.0, 25.0, None, int(spec.get("min_ra") or req["ra_min"]), "best-effort", 1)
 
 def _notes(concept_type: str, calc: Dict[str, Any], lum: Optional[Dict[str, Any]], spec: Dict[str, Any]) -> str:
     base = {
@@ -335,13 +468,11 @@ def _dxf_from_solution(result: List[Dict[str, Any]]) -> str:
         W = float(dims.get("W") or 5.0)
         coords = calc.get("coords") or []
 
-        # perimetro area
         lines += ["0","LWPOLYLINE","8","AREE","90","4","70","1",
                   "10",str(x_off),"20","0.0",
                   "10",str(x_off+L),"20","0.0",
                   "10",str(x_off+L),"20",str(W),
                   "10",str(x_off),"20",str(W)]
-        # punti
         for p in coords:
             px, py = float(p[0]), float(p[1])
             lines += ["0","POINT","8","LAMPADE","10",str(x_off+px),"20",str(py),"30","0.0"]
@@ -360,13 +491,9 @@ def _dxf_from_solution(result: List[Dict[str, Any]]) -> str:
 # -----------------------------
 # Routes
 # -----------------------------
-@app.get("/")
-def root():
-    return {"ok": True, "service": "LuxIA Engine API", "docs": "/docs", "health": "/health"}
-
 @app.get("/health")
 def health():
-    return {"ok": True, "features": ["mvp-concepts", "layout-grid", "uniformity-proxy", "export-dxf", "export-json"]}
+    return {"ok": True, "features": ["autopilot-optimizer", "layout-generator", "uniformity-proxy", "coords", "scenes", "export-dxf", "export-json"]}
 
 @app.post("/projects/{project_id}/concepts")
 def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: Optional[str] = Header(None)):
@@ -378,9 +505,7 @@ def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: O
     project_style_pack: Dict[str, Any] = payload.get("project_style_pack", {}) or {}
     pack_params = _pack_params(project_style_pack)
 
-    # IMPORTANT: sempre default sicuro
     designer_area_bias: Dict[str, Any] = payload.get("designer_area_bias", {}) or {}
-
     allowed_brands: List[str] = payload.get("allowed_brands", []) or []
     catalog: List[Dict[str, Any]] = payload.get("catalog", []) or []
     priority: str = (payload.get("priority") or "mix").lower()
@@ -389,12 +514,8 @@ def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: O
     token_bias = _style_bias(style_tokens)
     team_bias = _team_bias(designer_stats)
     area_bias = _area_bias(designer_area_bias)
-
-    # blend: tokens 0.35 + team 0.40 + area 0.25
-    bias = {
-        k: (0.35*token_bias.get(k,1.0) + 0.40*team_bias.get(k,1.0) + 0.25*area_bias.get(k,1.0))
-        for k in ["comfort","efficiency","architectural"]
-    }
+    # blend: tokens 0.35 + team DNA 0.40 + area-type DNA 0.25
+    bias = {k: (0.35*token_bias.get(k,1.0) + 0.40*team_bias.get(k,1.0) + 0.25*area_bias.get(k,1.0)) for k in ['comfort','efficiency','architectural']}
     order = sorted(["comfort", "efficiency", "architectural"], key=lambda k: bias.get(k, 1.0), reverse=True)
 
     out = []
@@ -407,8 +528,7 @@ def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: O
 
         block = {"area": name, "concepts": []}
         for idx, ctype in enumerate(order):
-            # FIX: passiamo pack_params qui (prima era rotto)
-            spec = _ideal_spec(area, ctype, req, constraints, pack_params)
+            spec = _ideal_spec(area, ctype, req, constraints)
             candidates = _filter_candidates(catalog, allowed_brands, spec)
             sol = _optimize(area_m2, tipo, h_m, req, spec, candidates, ctype, priority)
 
@@ -435,14 +555,7 @@ def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: O
         "ok": True,
         "project_id": project_id,
         "result": out,
-        "style_used": {
-            "bias": bias,
-            "token_bias": token_bias,
-            "team_bias": team_bias,
-            "area_bias": area_bias,
-            "order": order,
-            "pack_params": pack_params,
-        },
+        "style_used": {"bias": bias, "token_bias": token_bias, "team_bias": team_bias, "area_bias": area_bias, "order": order},
         "brands_used": allowed_brands,
         "autopilot": {"priority": priority, "constraints": constraints},
     }
