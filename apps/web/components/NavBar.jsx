@@ -29,6 +29,7 @@ export default function NavBar() {
         💡 <span>LuxIA</span>
       </div>
       <a href="/" style={linkStyle}>Home</a>
+      <a href="/studio" style={linkStyle}>Studi</a>
       <a href="/studio/new" style={linkStyle}>+ Studio</a>
       <a href="/projects" style={linkStyle}>Progetti</a>
       <a href="/projects/new" style={linkStyle}>+ Progetto</a>

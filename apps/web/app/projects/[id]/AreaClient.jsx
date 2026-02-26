@@ -87,7 +87,10 @@ async function loadAreas() {
     await loadAreas();
   }
 
-  async function generateConcepts(priority = "mix") {
+  // IMPORTANT: keep this function with *no* parameters.
+  // If someone mistakenly wires it as onClick={generateConcepts}, React passes the click event
+  // as the first argument, and that event contains circular references → JSON.stringify fails.
+  async function generateConcepts() {
     setMsg("");
     if (!areas.length) return setMsg("Aggiungi prima almeno un'area.");
     try {
@@ -127,7 +130,7 @@ if (project.active_style_id) {
         project_style_pack,
         allowed_brands: projectBrands,
         catalog,
-        priority,
+        priority: "mix",
         constraints,
         designer_stats,
         designer_area_bias,
