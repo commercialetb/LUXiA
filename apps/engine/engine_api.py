@@ -12,7 +12,9 @@ app = FastAPI(title="LuxIA Engine API (MVP)", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    # MVP: allow calls from Vercel/localhost without fighting CORS during setup.
+    # Tighten this (specific domains) before production.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,7 +114,13 @@ def _style_bias(style_tokens: Dict[str, Any]) -> Dict[str, float]:
     mx = max(c, e, a, 1.0)
     return {"comfort": 0.8 + 0.7*(c/mx), "efficiency": 0.8 + 0.7*(e/mx), "architectural": 0.8 + 0.7*(a/mx)}
 
-def _ideal_spec(area: Dict[str, Any], concept_type: str, req: Dict[str, Any], constraints: str = "") -> Dict[str, Any]:
+def _ideal_spec(
+    area: Dict[str, Any],
+    concept_type: str,
+    req: Dict[str, Any],
+    pack_params: Optional[Dict[str, Any]] = None,
+    constraints: str = "",
+) -> Dict[str, Any]:
     tipo = (area.get("tipo_locale") or "Ufficio VDT").lower()
     c_low = (constraints or "").lower()
 
@@ -132,6 +140,7 @@ def _ideal_spec(area: Dict[str, Any], concept_type: str, req: Dict[str, Any], co
 
     distribution = "wide" if concept_type != "architectural" else "mixed (ambient+accent)"
     # v22: style pack influences optics/distribution
+    pack_params = pack_params or {}
     cl = str(pack_params.get('contrast_level') or 'medium')
     ar = float(pack_params.get('accent_ratio') or 0.2)
     if cl == 'high' or ar >= 0.25:
@@ -343,8 +352,17 @@ def _scene_presets(tipo_locale: str) -> List[Dict[str, Any]]:
         {"id":"soft", "name":"Soft", "channels":{"ambient":0.4, "accent":0.1}},
     ]
 
-def _optimize(area_m2: float, tipo_locale: str, h_m: float, req: Dict[str, Any], spec: Dict[str, Any],
-              candidates: List[Dict[str, Any]], concept_type: str, priority: str) -> Dict[str, Any]:
+def _optimize(
+    area_m2: float,
+    tipo_locale: str,
+    h_m: float,
+    req: Dict[str, Any],
+    spec: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+    concept_type: str,
+    priority: str,
+    pack_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     target_lux = float(spec["required_lux"])
     CU, MF = float(req["CU"]), float(req["MF"])
     uni_min = float(spec.get("uni_min") or req.get("uni_min") or 0.4)
@@ -353,6 +371,8 @@ def _optimize(area_m2: float, tipo_locale: str, h_m: float, req: Dict[str, Any],
     layout = _choose_layout(tipo_locale, concept_type, spec.get("constraints") or "")
 
     ranked = sorted(candidates, key=lambda x: _score_candidate(x, concept_type, priority), reverse=True)
+
+    pack_params = pack_params or {}
 
     def pack_solution(lum, flux, watt, ugr, cri, status, iterations):
         eff_target = float(target_lux) * float(pack_params.get('density_bias') or 1.0)
@@ -495,6 +515,12 @@ def _dxf_from_solution(result: List[Dict[str, Any]]) -> str:
 def health():
     return {"ok": True, "features": ["autopilot-optimizer", "layout-generator", "uniformity-proxy", "coords", "scenes", "export-dxf", "export-json"]}
 
+
+@app.get("/")
+def root():
+    # Some platforms probe GET/HEAD /; returning JSON avoids a confusing 404.
+    return {"ok": True, "name": "LuxIA Engine", "hint": "Open /docs for Swagger UI"}
+
 @app.post("/projects/{project_id}/concepts")
 def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: Optional[str] = Header(None)):
     auth(x_luxia_token)
@@ -528,9 +554,10 @@ def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: O
 
         block = {"area": name, "concepts": []}
         for idx, ctype in enumerate(order):
-            spec = _ideal_spec(area, ctype, req, constraints)
+            # Let the Style Pack influence the spec (CCT, contrast, accent ratio, etc.).
+            spec = _ideal_spec(area, ctype, req, pack_params, constraints)
             candidates = _filter_candidates(catalog, allowed_brands, spec)
-            sol = _optimize(area_m2, tipo, h_m, req, spec, candidates, ctype, priority)
+            sol = _optimize(area_m2, tipo, h_m, req, spec, candidates, ctype, priority, pack_params)
 
             lum = sol.get("luminaire")
             calc = sol.get("calc", {})

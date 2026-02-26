@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
+
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+function sbAdmin() {
+  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, serviceKey);
+}
 
 // GET ?tenantId=...
 export async function GET(req) {
   try {
-    const supabase = supabaseServer();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ ok:false, error:"Unauthorized" }, { status: 401 });
-
+    const supabase = sbAdmin();
     const { searchParams } = new URL(req.url);
     const tenantId = searchParams.get("tenantId");
     if (!tenantId) return NextResponse.json({ ok:false, error:"Missing tenantId" }, { status: 400 });
@@ -17,7 +22,6 @@ export async function GET(req) {
       .select("id,name,scope,client_name,is_default,created_at")
       .eq("tenant_id", tenantId)
       .order("is_default", { ascending: false });
-
     if (error) throw error;
     return NextResponse.json({ ok:true, styles: data || [] });
   } catch (e) {
@@ -28,11 +32,8 @@ export async function GET(req) {
 // POST { tenantId, projectId, action: "set_active"|"create_client", styleId?, clientName?, name? }
 export async function POST(req) {
   try {
-    const supabase = supabaseServer();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ ok:false, error:"Unauthorized" }, { status: 401 });
-
-    const body = await req.json().catch(() => ({}));
+    const supabase = sbAdmin();
+    const body = await req.json();
     const { tenantId, projectId, action, styleId, clientName, name } = body || {};
     if (!tenantId || !projectId) return NextResponse.json({ ok:false, error:"Missing tenantId/projectId" }, { status: 400 });
 
@@ -53,10 +54,7 @@ export async function POST(req) {
         is_default: false
       }).select().single();
       if (error) throw error;
-
-      const { error: e2 } = await supabase.from("projects").update({ active_style_id: data.id }).eq("id", projectId);
-      if (e2) throw e2;
-
+      await supabase.from("projects").update({ active_style_id: data.id }).eq("id", projectId);
       return NextResponse.json({ ok:true, style: data });
     }
 

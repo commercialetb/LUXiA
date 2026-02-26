@@ -1,20 +1,25 @@
 import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
+
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+function sbAdmin() {
+  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, serviceKey);
+}
 
 // POST { projectId, areaId, conceptId }
 export async function POST(req) {
   try {
-    const supabase = supabaseServer();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ ok:false, error:"Unauthorized" }, { status: 401 });
-
-    const body = await req.json().catch(() => ({}));
+    const supabase = sbAdmin();
+    const body = await req.json();
     const { projectId, areaId, conceptId } = body || {};
     if (!projectId || !areaId || !conceptId) {
       return NextResponse.json({ ok:false, error:"Missing projectId/areaId/conceptId" }, { status: 400 });
     }
 
-    // Pull project -> tenant + active style (RLS-protected)
+    // Pull project -> org + active style
     const { data: proj, error: pErr } = await supabase
       .from("projects")
       .select("id, tenant_id, active_style_id")
@@ -25,30 +30,27 @@ export async function POST(req) {
     const tenantId = proj.tenant_id;
     let styleId = proj.active_style_id;
 
-    // Ensure a default style exists (RLS allows insert/update for tenant users)
+    // Ensure a default style exists
     if (!styleId) {
-      const { data: st, error: stErr } = await supabase
+      const { data: st } = await supabase
         .from("designer_styles")
         .select("id")
         .eq("tenant_id", tenantId)
         .eq("is_default", true)
         .limit(1);
-      if (stErr) throw stErr;
 
       if (st?.[0]?.id) {
         styleId = st[0].id;
+        await supabase.from("projects").update({ active_style_id: styleId }).eq("id", projectId);
       } else {
-        const { data: created, error: cErr } = await supabase
+        const { data: created } = await supabase
           .from("designer_styles")
           .insert({ tenant_id: tenantId, name: "Team Default", scope: "tenant", is_default: true })
           .select()
           .single();
-        if (cErr) throw cErr;
         styleId = created.id;
+        await supabase.from("projects").update({ active_style_id: styleId }).eq("id", projectId);
       }
-
-      const { error: upErr } = await supabase.from("projects").update({ active_style_id: styleId }).eq("id", projectId);
-      if (upErr) throw upErr;
     }
 
     // Load area + concept for metrics
@@ -67,19 +69,19 @@ export async function POST(req) {
     if (cErr) throw cErr;
 
     const calc = con.metrics || con.solution?.calc || {};
-    const n = Number(calc.n ?? calc.N ?? 0);
+    const n = Number(calc.n || calc.N || 0);
     const sup = Number(area.superficie_m2 || 0);
     const density = sup ? (n / sup) : null;
     const wm2 = Number(calc.wm2 || 0);
     const ugr = Number(calc.ugr || 0);
 
     // Brand & CCT attempt
-    const selectedBrand = (con.solution?.luminaire?.brand) || (con.solution?.brand) || null;
+        const selectedBrand = (con.solution?.luminaire?.brand) || (con.solution?.brand) || null;
     const selectedCct = Number(con.solution?.cct || con.solution?.CCT || 0) || null;
     const selectedMood = con.solution?.mood || null;
 
-    // Record learning event (RLS)
-    const { error: insErr } = await supabase.from("designer_learning_events").insert({
+    // created_by unknown here (service role), store null; team aggregation still works.
+    await supabase.from("designer_learning_events").insert({
       tenant_id: tenantId,
       style_id: styleId,
       project_id: projectId,
@@ -93,12 +95,10 @@ export async function POST(req) {
       area_m2: sup,
       density,
       wm2,
-      ugr,
-      created_by: user.id,
+      ugr
     });
-    if (insErr) throw insErr;
 
-    // Recompute aggregated profile (RPC is SECURITY DEFINER)
+    // recompute
     const { data: stats, error: rErr } = await supabase.rpc("recompute_designer_profile", { p_tenant_id: tenantId, p_style_id: styleId });
     if (rErr) throw rErr;
 

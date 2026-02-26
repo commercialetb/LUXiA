@@ -1,3 +1,5 @@
+import NavBar from "@/components/NavBar";
+
 export const metadata = { title: "LuxIA SaaS MVP" };
 
 export default function RootLayout({ children }) {
@@ -17,7 +19,10 @@ export default function RootLayout({ children }) {
   .btn:disabled{opacity:.6; cursor:not-allowed;}
   .btn:hover{filter:brightness(1.05);}
 `}</style>
-{children}
+        <NavBar />
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "18px 18px 28px" }}>
+          {children}
+        </div>
 
       </body>
     </html>

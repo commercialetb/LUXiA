@@ -251,7 +251,8 @@ if (project.active_style_id) {
       </div>
 
       <div style={{ marginTop: 12, display:"flex", gap:10 }}>
-        <button style={btn("#2563eb")} onClick={generateConcepts}>Genera 3 concept (Engine)</button>
+        {/* NOTE: don't pass the React click event into generateConcepts (it would break JSON serialization). */}
+        <button style={btn("#2563eb")} onClick={() => generateConcepts()}>Genera 3 concept (Engine)</button>
         <a href={`/projects/${project.id}/review`} style={{ alignSelf:"center", color:"#93c5fd" }}>🧠 Review & Learning</a>
         <a href="/" style={{ alignSelf:"center", color:"#93c5fd" }}>← Home</a>
       </div>
