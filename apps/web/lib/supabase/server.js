@@ -15,3 +15,7 @@ export function supabaseServer() {
     },
   });
 }
+
+
+// Back-compat: some pages import createServer()
+export const createServer = supabaseServer;
