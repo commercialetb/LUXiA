@@ -285,35 +285,66 @@ def _layout_coords(n: int, L: float, W: float, layout: str = "grid", uniformity_
     return [[round(x, 2), round(y, 2)] for x, y in coords]
 
 def _uniformity_proxy(coords: List[List[float]], L: float, W: float, h_m: float, flux_lm: float, CU: float, MF: float) -> Dict[str, float]:
+    """Compute U0 on a point grid (working plane) using a Lambertian direct model.
+
+    We mainly need *uniformity* (relative distribution). CU already represents
+    room-utilization, so for the point grid we compute a normalized direct
+    distribution (Φ=1). The caller can scale it to match the lumen-method Em.
+
+    Formula (Lambertian):
+      I(θ) = I0·cosθ  with I0 = Φ/π  (Φ=1)
+      E = I(θ)·cosθ / d² = I0·cos²θ / d²
+    """
+
     if not coords:
-        return {"emin": 0.0, "emax": 0.0, "emean": 0.0, "u0": 0.0}
+        return {"emin_raw": 0.0, "emax_raw": 0.0, "emean_raw": 0.0, "u0": 0.0, "grid": 0.5, "nx": 0, "ny": 0}
 
-    L = max(L, 1.0); W = max(W, 1.0)
-    h = max(float(h_m or 2.7), 2.2)
+    L = max(float(L), 1.0)
+    W = max(float(W), 1.0)
 
-    nx, ny = (12, 8) if (L / max(W, 1e-6)) > 2.0 else (10, 10)
-    xs = [L * (i + 0.5) / nx for i in range(nx)]
-    ys = [W * (j + 0.5) / ny for j in range(ny)]
+    # Working plane height (typical office): 0.80 m
+    workplane = 0.80
+    hm = max(float(h_m or 2.7), workplane + 0.2)
+    h = max(hm - workplane, 0.6)
 
-    vals = []
-    K = (flux_lm / (2.0 * math.pi)) * CU * MF * 0.65
+    # Grid step: finer for corridors / narrow areas
+    aspect = L / max(W, 1e-6)
+    grid = 0.25 if aspect >= 2.2 or min(L, W) <= 2.0 else 0.50
+    grid = max(0.25, min(0.75, grid))
+
+    nx = max(2, int(L / grid))
+    ny = max(2, int(W / grid))
+    xs = [(i + 0.5) * (L / nx) for i in range(nx)]
+    ys = [(j + 0.5) * (W / ny) for j in range(ny)]
+
+    I0 = 1.0 / math.pi
+    vals_raw: List[float] = []
 
     for y in ys:
         for x in xs:
             e = 0.0
             for lx, ly in coords:
-                dx = x - lx
-                dy = y - ly
-                d = math.sqrt(dx*dx + dy*dy + h*h)
-                ct = h / d
-                e += K * (ct / (d*d))
-            vals.append(e)
+                dx = x - float(lx)
+                dy = y - float(ly)
+                d = math.sqrt(dx * dx + dy * dy + h * h)
+                cos_t = h / d
+                e += I0 * (cos_t * cos_t) / (d * d)
+            vals_raw.append(e)
 
-    emin = float(min(vals))
-    emax = float(max(vals))
-    emean = float(sum(vals) / len(vals)) if vals else 0.0
-    u0 = float(emin / emean) if emean > 0 else 0.0
-    return {"emin": round(emin, 2), "emax": round(emax, 2), "emean": round(emean, 2), "u0": round(u0, 2)}
+    em_raw = float(sum(vals_raw) / len(vals_raw)) if vals_raw else 0.0
+    emin_raw = float(min(vals_raw)) if vals_raw else 0.0
+    emax_raw = float(max(vals_raw)) if vals_raw else 0.0
+    u0 = float(emin_raw / em_raw) if em_raw > 0 else 0.0
+
+    return {
+        "emin_raw": round(emin_raw, 6),
+        "emax_raw": round(emax_raw, 6),
+        "emean_raw": round(em_raw, 6),
+        "u0": round(u0, 2),
+        "grid": grid,
+        "nx": nx,
+        "ny": ny,
+    }
 
 def _choose_layout(tipo_locale: str, concept_type: str, constraints: str) -> str:
     t = (tipo_locale or "").lower()
@@ -380,13 +411,21 @@ def _optimize(
         coords = _layout_coords(n, L, W, layout, uniformity_target=float(pack_params.get('uniformity_target') or 0.6))
         uni = _uniformity_proxy(coords, L, W, h_m, flux, CU, MF)
 
+        # Scale grid illuminance so that mean(E) matches lumen-method Em.
+        em_raw = float(uni.get('emean_raw') or 0.0)
+        scale = (float(Em) / em_raw) if em_raw > 0 else 0.0
+        emin = round(float(uni.get('emin_raw') or 0.0) * scale, 1)
+        emax = round(float(uni.get('emax_raw') or 0.0) * scale, 1)
+        emean = round(float(uni.get('emean_raw') or 0.0) * scale, 1)
+        u0 = float(uni.get('u0') or 0.0)
+
         Wt = round(n * watt, 1)
         wm2 = round(Wt / max(area_m2, 1.0), 2)
 
         ok_lux = Em >= target_lux * 0.95
         ok_ra  = int(cri) >= int(spec.get("min_ra") or req["ra_min"])
         ok_ugr = True if ugr is None else (int(ugr) <= int(spec.get("target_ugr") or req["ugr_max"]))
-        ok_uni = float(uni.get("u0") or 0.0) >= uni_min
+        ok_uni = float(u0 or 0.0) >= uni_min
 
         return {
             "luminaire": lum,
@@ -397,9 +436,11 @@ def _optimize(
                 "target_ugr": int(spec.get("target_ugr") or req["ugr_max"]),
                 "min_ra": int(spec.get("min_ra") or req["ra_min"]),
                 "uni_min": round(uni_min, 2),
-                "u0": uni.get("u0"),
-                "emin_proxy": uni.get("emin"),
-                "emean_proxy": uni.get("emean"),
+                "u0": round(float(u0 or 0.0), 2),
+                "emin": emin,
+                "emax": emax,
+                "emean": emean,
+                "grid": {"step": uni.get("grid"), "nx": uni.get("nx"), "ny": uni.get("ny"), "scale": round(scale, 3)},
                 "layout": layout,
                 "dims": {"L": round(L, 2), "W": round(W, 2), "h": round(float(h_m or 2.7), 2)},
                 "coords": coords,
