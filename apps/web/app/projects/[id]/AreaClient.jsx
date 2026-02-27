@@ -1,150 +1,370 @@
 "use client";
+import { useEffect, useState } from "react";
+import { supabaseBrowser } from "@/lib/supabase/browser";
+import VoiceAssistant from "@/components/VoiceAssistant";
+import { engineApi } from "@/lib/engine";
 
-import React, { useMemo, useState } from "react";
+export default function AreaClient({ project }) {
+  const supabase = supabaseBrowser();
+  const [areas, setAreas] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [projectBrands, setProjectBrands] = useState([]);
+  const [allBrands, setAllBrands] = useState([]);
+  const [catalog, setCatalog] = useState([]);
+  const [constraints, setConstraints] = useState("");
 
-/**
- * LuxIA — AreaClient (AutOPILOT + PRO toggle)
- *
- * - One-click AUTOPILOT: generates 3 concepts via Engine
- * - Optional PRO Radiance: if toggle ON, starts a PRO job right after concepts generation
- *
- * Requirements (Vercel env):
- * - NEXT_PUBLIC_ENGINE_URL (e.g. https://luxia.onrender.com)
- * - NEXT_PUBLIC_LUXIA_TOKEN (same as Engine LUXIA_TOKEN)
- *
- * Notes:
- * - This component is intentionally self-contained to avoid “missing imports”.
- * - If your project already has a richer AreaClient, merge only the PRO toggle + autopilot handler parts.
- */
-
-function getEngineUrl() {
-  const raw = process.env.NEXT_PUBLIC_ENGINE_URL || "";
-  return raw.replace(/\/+$/, "");
-}
-
-function getAuthHeaders() {
-  const token = process.env.NEXT_PUBLIC_LUXIA_TOKEN || "";
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function engineFetch(path, opts = {}) {
-  const base = getEngineUrl();
-  if (!base) throw new Error("NEXT_PUBLIC_ENGINE_URL mancante");
-  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
-
-  const headers = {
-    "Content-Type": "application/json",
-    ...(opts.headers || {}),
-    ...getAuthHeaders(),
-  };
-
-  const res = await fetch(url, { ...opts, headers });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Engine ${res.status}: ${text || res.statusText}`);
-  }
-  // Some endpoints may return empty body (204). Keep safe:
-  const ct = res.headers.get("content-type") || "";
-  if (!ct.includes("application/json")) return { ok: true };
-  return res.json();
-}
-
-export default function AreaClient({ projectId, initialAreas = [], onResults }) {
-  const [areas, setAreas] = useState(initialAreas);
-  const [loading, setLoading] = useState(false);
+  // Autopilot UX
   const [proEnabled, setProEnabled] = useState(false);
-  const [status, setStatus] = useState("");
+  const [running, setRunning] = useState(false);
+  const [brief, setBrief] = useState("");
 
-  const canRun = useMemo(() => !!projectId, [projectId]);
 
-  // AUTOPILOT:
-  // 1) generate 3 concepts (NumPy fast)
-  // 2) if PRO toggle enabled, start PRO Radiance async job
-  const runAutopilot = async () => {
-    if (!canRun) return;
-    setLoading(true);
-    setStatus("Avvio Autopilot…");
+  // new area fields
+  const [name, setName] = useState("");
+  const [tipo, setTipo] = useState("Ufficio VDT");
+  const [sup, setSup] = useState(30);
+  const [h, setH] = useState(2.7);
 
+  // Load/save project brief locally (no DB schema changes)
+  useEffect(() => {
     try {
-      // 1) Generate concepts (fast engine)
-      setStatus("Generazione 3 concept (Fast Engine)…");
-      const concepts = await engineFetch(`/projects/${projectId}/concepts`, {
+      const k = `luxia:brief:${project.id}`;
+      const v = localStorage.getItem(k) || "";
+      setBrief(v);
+    } catch {}
+  }, [project.id]);
+
+  useEffect(() => {
+    try {
+      const k = `luxia:brief:${project.id}`;
+      localStorage.setItem(k, brief || "");
+    } catch {}
+  }, [project.id, brief]);
+
+async function loadBrandsCatalog() {
+  setMsg("");
+  const { data: pb, error: e1 } = await supabase
+    .from("project_brands")
+    .select("brand")
+    .eq("project_id", project.id);
+
+  if (e1) return setMsg("Errore brand progetto: " + e1.message);
+  const selected = (pb || []).map(x => x.brand);
+  setProjectBrands(selected);
+
+  const { data: lum, error: e2 } = await supabase
+    .from("luminaires")
+    .select("id, brand, model, family, type, mounting, distribution, flux_lm, watt, cct, cri, ugr, ip, dimmable, notes")
+    .eq("tenant_id", project.tenant_id);
+
+  if (e2) return setMsg("Errore catalogo: " + e2.message);
+  setCatalog(lum || []);
+  const brands = Array.from(new Set((lum || []).map(x => x.brand))).sort();
+  setAllBrands(brands);
+}
+
+async function toggleBrand(brand) {
+  setMsg("");
+  const has = projectBrands.includes(brand);
+  if (has) {
+    const { error } = await supabase
+      .from("project_brands")
+      .delete()
+      .eq("project_id", project.id)
+      .eq("brand", brand);
+    if (error) return setMsg("Errore rimozione brand: " + error.message);
+    setProjectBrands(prev => prev.filter(b => b !== brand));
+  } else {
+    const { error } = await supabase
+      .from("project_brands")
+      .insert({ project_id: project.id, tenant_id: project.tenant_id, brand });
+    if (error) return setMsg("Errore aggiunta brand: " + error.message);
+    setProjectBrands(prev => [...prev, brand]);
+  }
+}
+
+async function loadAreas() {
+    const { data, error } = await supabase.from("areas").select("*").eq("project_id", project.id).order("created_at", { ascending: true });
+    if (error) return setMsg("Errore aree: " + error.message);
+    setAreas(data || []);
+  }
+
+  useEffect(() => { loadAreas(); loadBrandsCatalog(); }, [project.id]);
+
+  async function addArea(e) {
+    e.preventDefault();
+    setMsg("");
+    if (!name.trim()) return setMsg("Nome area mancante.");
+    const { error } = await supabase.from("areas").insert({
+      project_id: project.id,
+      name,
+      tipo_locale: tipo,
+      superficie_m2: Number(sup),
+      altezza_m: Number(h),
+      vdt: (tipo === "Ufficio VDT"),
+    });
+    if (error) return setMsg("Errore insert area: " + error.message);
+    setName("");
+    await loadAreas();
+  }
+
+  // IMPORTANT: keep this function with *no* parameters.
+  // If someone mistakenly wires it as onClick={generateConcepts}, React passes the click event
+  // as the first argument, and that event contains circular references → JSON.stringify fails.
+  async function generateConcepts() {
+    setMsg("");
+    if (!areas.length) return setMsg("Aggiungi prima almeno un'area.");
+    try {
+      // call Engine (placeholder) to get 3 concept per area
+      // Fetch studio_profile to make concepts style-aware (learning)
+      const { data: sp } = await supabase.from("studio_profile").select("style_tokens").eq("tenant_id", project.tenant_id).maybeSingle();
+      const style_tokens = sp?.style_tokens || {};
+// Fetch Project Style Pack (editable sliders)
+let project_style_pack = null;
+try {
+  const res = await fetch(`/api/projects/${project.id}/style-pack`, { cache: "no-store" });
+  const j = await res.json();
+  project_style_pack = j?.pack || null;
+} catch (e) {
+  project_style_pack = null;
+}
+
+// Area-DNA bias (optional). Keep a safe default to avoid engine/runtime errors.
+// Expected shape (example): { "Ufficio VDT": {"comfort":1.1,"efficiency":1.0,"architectural":0.95}, ... }
+const designer_area_bias = project_style_pack?.designer_area_bias || {};
+
+// Fetch Designer Brain profile (team DNA) for active style
+let designer_stats = null;
+if (project.active_style_id) {
+  const { data: dp } = await supabase
+    .from("designer_team_profile")
+    .select("stats")
+    .eq("tenant_id", project.tenant_id)
+    .eq("style_id", project.active_style_id)
+    .maybeSingle();
+  designer_stats = dp?.stats || null;
+}
+
+      const payload = {
+        areas: areas.map(a => ({ name: a.name, tipo_locale: a.tipo_locale, superficie_m2: Number(a.superficie_m2), altezza_m: Number(a.altezza_m) })),
+        style_tokens,
+        project_style_pack,
+        allowed_brands: projectBrands,
+        catalog,
+        priority: "mix",
+        constraints,
+        brief,
+        designer_stats,
+        designer_area_bias,
+      };
+      const r = await engineApi(`/projects/${project.id}/concepts`, {
         method: "POST",
-        body: JSON.stringify({
-          mode: "fast",
-          areas: areas,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
 
-      if (typeof onResults === "function") onResults(concepts);
-
-      // 2) Optionally start PRO Radiance job
-      if (proEnabled) {
-        setStatus("PRO attivo: avvio job Radiance…");
-        const job = await engineFetch(`/projects/${projectId}/pro/radiance/jobs`, {
-          method: "POST",
-          body: JSON.stringify({
-            daylight: true,
-          }),
-        });
-        setStatus(`Job PRO avviato: ${job?.job_id || "ok"} (risultati in Jobs/PRO)`);
-      } else {
-        setStatus("Autopilot completato (Fast).");
+      // Persist basic concepts (placeholder rows) in DB
+      const inserts = [];
+      for (const block of (r.result || [])) {
+        const areaRow = areas.find(x => x.name === block.area) || areas.find(x => x.name.startsWith(block.area)) || null;
+        if (!areaRow) continue;
+        for (const c of (block.concepts || [])) {
+          const mapType = c.concept_type || (c.name.toLowerCase().includes("comfort") ? "comfort" :
+                          c.name.toLowerCase().includes("eff") ? "efficiency" : "architectural");
+          inserts.push({
+            area_id: areaRow.id,
+            concept_type: mapType,
+            solution: { 
+              notes: c.notes, 
+              engine_id: c.id, 
+              concept_type: mapType,
+              luminaire: c.luminaire || null,
+              style_bias: c.style_bias,
+              style_snapshot: payload.style_tokens || {},
+            },
+            metrics: c.calc || {},
+            renders: {}
+          });
+        }
       }
+      if (inserts.length) {
+        const { error } = await supabase.from("concepts").insert(inserts);
+        if (error) return setMsg("Errore salvataggio concept: " + error.message);
+      }
+      setMsg("Concept generati e salvati. (Step successivo: calcoli+render+scelta+learning)");
     } catch (e) {
-      setStatus(`Errore: ${e?.message || String(e)}`);
-      console.error(e);
-    } finally {
-      setLoading(false);
+      setMsg("Errore Engine: " + (e?.message || String(e)));
+      throw e;
     }
-  };
+  }
+
+
+  async function startProJob() {
+    try {
+      const j = await engineApi(`/projects/${project.id}/pro/radiance/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ daylight: true, brief }),
+      });
+      return j;
+    } catch (e) {
+      throw new Error("PRO non disponibile: " + e.message);
+    }
+  }
+
+  async function runAutopilot() {
+    if (running) return;
+    setRunning(true);
+    setMsg("🚀 Autopilot: avvio…");
+    try {
+      await generateConcepts();
+      if (proEnabled) {
+        setMsg("🚀 Autopilot: PRO ON → avvio Radiance job…");
+        const job = await startProJob();
+        setMsg(`🚀 Autopilot completato. PRO job: ${job?.job_id || "ok"}. Apro Review…`);
+      } else {
+        setMsg("🚀 Autopilot completato. Apro Review…");
+      }
+      setTimeout(() => { window.location.href = `/projects/${project.id}/review`; }, 300);
+    } catch (e) {
+      setMsg(String(e.message || e));
+    } finally {
+      setRunning(false);
+    }
+  }
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button
-          onClick={runAutopilot}
-          disabled={!canRun || loading}
+    <section style={card()}>
+      <h2 style={{ marginTop: 0 }}>Aree</h2>
+
+      <div style={{ display:"grid", gap:10, marginBottom: 12 }}>
+        <div style={{ fontWeight: 900 }}>Istruzioni progetto (brief)</div>
+        <textarea
+          value={brief}
+          onChange={(e)=>setBrief(e.target.value)}
+          placeholder="Scrivi cosa deve fare LuxIA per questo progetto (stile, CCT, budget, priorità, vincoli). Esempio: Uffici moderni, 4000K, UGR<19, priorità comfort, budget medio."
           style={{
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: "1px solid #1e3a8a",
-            background: loading ? "#93c5fd" : "#2563eb",
-            color: "white",
-            fontWeight: 700,
-            cursor: loading ? "not-allowed" : "pointer",
+            width:"100%", minHeight: 90,
+            padding: 10, borderRadius: 12,
+            border:"1px solid #24304a", background:"#0b1220", color:"#e5e7eb",
           }}
-          title="One-click: genera concept + calcoli (e PRO se attivo)"
-        >
-          🚀 AUTOPILOT
-        </button>
+        />
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600 }}>
-          <input
-            type="checkbox"
-            checked={proEnabled}
-            onChange={(e) => setProEnabled(e.target.checked)}
-            disabled={loading}
-          />
-          PRO Radiance (on/off)
-        </label>
+        <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+          <button
+            style={btn("#2563eb")}
+            onClick={() => runAutopilot()}
+            disabled={running}
+            title="One-click: genera concept + calcoli fast, e se PRO ON avvia Radiance."
+          >
+            🚀 AUTOPILOT
+          </button>
 
-        <span style={{ color: "#64748b", fontSize: 13 }}>
-          {proEnabled ? "Autopilot avvierà anche Radiance PRO." : "Autopilot userà solo Fast Engine (NumPy)."}
-        </span>
+          <label style={{ display:"flex", gap:8, alignItems:"center", fontWeight: 800 }}>
+            <input
+              type="checkbox"
+              checked={proEnabled}
+              onChange={(e)=>setProEnabled(e.target.checked)}
+              disabled={running}
+            />
+            PRO Radiance (on/off)
+          </label>
+
+          <span style={{ opacity: 0.8, fontSize: 13 }}>
+            {proEnabled ? "Autopilot avvierà anche Radiance PRO." : "Autopilot usa solo Fast Engine (NumPy)."}
+          </span>
+        </div>
       </div>
 
-      {status ? (
-        <div style={{ padding: 10, borderRadius: 10, background: "#f1f5f9", color: "#0f172a" }}>
-          <b>Stato:</b> {status}
+      <form onSubmit={addArea} style={{ display:"grid", gap:8, gridTemplateColumns:"2fr 1.2fr 0.8fr 0.8fr auto", alignItems:"end" }}>
+        <div>
+          <label style={lab()}>Nome</label>
+          <input value={name} onChange={(e)=>setName(e.target.value)} style={inp()} placeholder="Es. V1 Ufficio operativo" />
         </div>
-      ) : null}
+        <div>
+          <label style={lab()}>Tipo locale</label>
+          <select value={tipo} onChange={(e)=>setTipo(e.target.value)} style={inp()}>
+            <option>Ufficio VDT</option>
+            <option>Sala riunioni</option>
+            <option>Corridoio</option>
+            <option>Reception</option>
+            <option>Bagno/WC</option>
+            <option>Archivio</option>
+            <option>Ingresso</option>
+            <option>Mensa/Ristoro</option>
+            <option>Locale tecnico</option>
+          </select>
+        </div>
+        <div>
+          <label style={lab()}>m²</label>
+          <input type="number" step="0.1" value={sup} onChange={(e)=>setSup(e.target.value)} style={inp()} />
+        </div>
+        <div>
+          <label style={lab()}>h (m)</label>
+          <input type="number" step="0.05" value={h} onChange={(e)=>setH(e.target.value)} style={inp()} />
+        </div>
+        <button style={btn("#16a34a")} type="submit">+ Area</button>
+      </form>
 
-      {/* Debug block (can be removed) */}
-      <details style={{ padding: 10, borderRadius: 10, border: "1px solid #e2e8f0" }}>
-        <summary style={{ cursor: "pointer", fontWeight: 700 }}>Aree (debug)</summary>
-        <pre style={{ fontSize: 12, overflowX: "auto" }}>{JSON.stringify(areas, null, 2)}</pre>
-      </details>
+<div style={{ marginTop: 10 }}>
+  <div style={{ padding: 12, border:"1px solid #24304a", borderRadius: 14, background:"#0b1530", marginBottom: 12 }}>
+    <div style={{ fontWeight: 900, marginBottom: 6 }}>Brand attivi nel progetto (multi-brand)</div>
+    <div style={{ opacity: 0.85, fontSize: 13, marginBottom: 10 }}>
+      Seleziona i brand da cui LuxIA può scegliere i prodotti. Se non selezioni nulla, LuxIA genera concept “brand-neutral”.
     </div>
+    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+      {allBrands.length ? allBrands.map(b => (
+        <button key={b} onClick={() => toggleBrand(b)} style={{
+          padding:"6px 10px", borderRadius:999,
+          border: projectBrands.includes(b) ? "2px solid #60a5fa" : "1px solid #24304a",
+          background: projectBrands.includes(b) ? "#0f1a33" : "#0b1220",
+          color:"#e5e7eb", cursor:"pointer"
+        }}>{b}</button>
+      )) : <span style={{ opacity:0.85 }}>Nessun catalogo ancora. (Aggiungi luminaires nel DB)</span>}
+    </div>
+  </div>
+
+        {!areas.length ? (
+          <div style={{ opacity: 0.85 }}>Nessuna area inserita.</div>
+        ) : (
+          <table style={{ width:"100%", marginTop: 10, borderCollapse:"collapse" }}>
+            <thead>
+              <tr>
+                <th style={th()}>Nome</th>
+                <th style={th()}>Tipo</th>
+                <th style={th()}>m²</th>
+                <th style={th()}>h</th>
+              </tr>
+            </thead>
+            <tbody>
+              {areas.map(a => (
+                <tr key={a.id}>
+                  <td style={td()}>{a.name}</td>
+                  <td style={td()}>{a.tipo_locale}</td>
+                  <td style={td()}>{Number(a.superficie_m2).toFixed(1)}</td>
+                  <td style={td()}>{Number(a.altezza_m).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={{ marginTop: 12, display:"flex", gap:10 }}>
+        {/* NOTE: don't pass the React click event into generateConcepts (it would break JSON serialization). */}
+        <button style={btn("#2563eb")} onClick={() => generateConcepts()}>Genera 3 concept (Engine)</button>
+        <a href={`/projects/${project.id}/review`} style={{ alignSelf:"center", color:"#93c5fd" }}>🧠 Review & Learning</a>
+        <a href="/" style={{ alignSelf:"center", color:"#93c5fd" }}>← Home</a>
+      </div>
+
+      {msg && <div style={{ marginTop: 10, color: "#fde68a" }}>{msg}</div>}
+    </section>
   );
 }
+
+const card = ()=>({ background:"#0f172a", border:"1px solid #24304a", borderRadius:14, padding:14 });
+const inp  = ()=>({ width:"100%", padding:10, borderRadius:10, border:"1px solid #24304a", background:"#020617", color:"#e5e7eb" });
+const btn  = (c)=>({ background:c, border:"none", padding:"10px 14px", borderRadius:10, color:"white", fontWeight:800, cursor:"pointer" });
+const lab  = ()=>({ fontSize:12, opacity:0.8, display:"block", marginBottom:4 });
+const th   = ()=>({ textAlign:"left", padding:"8px 6px", borderBottom:"1px solid #24304a", fontSize:12, opacity:0.8 });
+const td   = ()=>({ padding:"8px 6px", borderBottom:"1px solid #1f2a44", fontSize:13 });
