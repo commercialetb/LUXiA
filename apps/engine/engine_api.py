@@ -1,10 +1,14 @@
 import os
 from typing import Optional, Dict, Any, List, Tuple
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 import math
 import json
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
 
 APP_TOKEN = os.getenv("LUXIA_TOKEN", "dev-local-token")
 
@@ -175,6 +179,37 @@ def _lumen_method(area_m2: float, target_lux: float, CU: float, MF: float, flux_
     em = (n * flux_lm * CU * MF) / area_m2
     return n, round(em, 1)
 
+
+def _approx_interreflection_factor(
+    area_m2: float,
+    h_m: float,
+    rho_avg: float,
+    workplane_h_m: float = 0.8,
+) -> float:
+    """Fast interreflection approximation (MVP "A").
+
+    Not Radiance. Pragmatic scalar boost:
+        E_total ~= E_direct * 1/(1 - rho_avg * F)
+    with F from a crude room-cavity ratio.
+    """
+    rho = _clamp(float(rho_avg or 0.0), 0.05, 0.90)
+    # Approx perimeter assuming near-square
+    side = max(1e-6, math.sqrt(max(1e-6, float(area_m2))))
+    perimeter = 4.0 * side
+    cavity_h = max(0.2, float(h_m) - float(workplane_h_m))
+    rcr = 5.0 * cavity_h * perimeter / max(1e-6, float(area_m2))
+    # Map RCR (0..10+) to coupling factor (0.35..0.70)
+    F = 0.70 - 0.035 * _clamp(rcr, 0.0, 10.0)
+    F = _clamp(F, 0.35, 0.70)
+    return 1.0 / max(1e-3, (1.0 - rho * F))
+
+
+def _make_isolux_grid(area_m2: float, nx: int = 14, ny: int = 10) -> Dict[str, Any]:
+    """Create a simple rectangular grid payload to be filled with lux values."""
+    w = math.sqrt(max(1e-6, float(area_m2)))
+    h = w
+    return {"nx": int(nx), "ny": int(ny), "width_m": w, "height_m": h, "values": []}
+
 def _filter_candidates(catalog: List[Dict[str, Any]], allowed_brands: List[str], spec: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not allowed_brands:
         return []
@@ -285,66 +320,86 @@ def _layout_coords(n: int, L: float, W: float, layout: str = "grid", uniformity_
     return [[round(x, 2), round(y, 2)] for x, y in coords]
 
 def _uniformity_proxy(coords: List[List[float]], L: float, W: float, h_m: float, flux_lm: float, CU: float, MF: float) -> Dict[str, float]:
-    """Compute U0 on a point grid (working plane) using a Lambertian direct model.
-
-    We mainly need *uniformity* (relative distribution). CU already represents
-    room-utilization, so for the point grid we compute a normalized direct
-    distribution (Φ=1). The caller can scale it to match the lumen-method Em.
-
-    Formula (Lambertian):
-      I(θ) = I0·cosθ  with I0 = Φ/π  (Φ=1)
-      E = I(θ)·cosθ / d² = I0·cos²θ / d²
-    """
-
     if not coords:
-        return {"emin_raw": 0.0, "emax_raw": 0.0, "emean_raw": 0.0, "u0": 0.0, "grid": 0.5, "nx": 0, "ny": 0}
+        return {"emin": 0.0, "emax": 0.0, "emean": 0.0, "u0": 0.0}
 
-    L = max(float(L), 1.0)
-    W = max(float(W), 1.0)
+    L = max(L, 1.0); W = max(W, 1.0)
+    h = max(float(h_m or 2.7), 2.2)
 
-    # Working plane height (typical office): 0.80 m
-    workplane = 0.80
-    hm = max(float(h_m or 2.7), workplane + 0.2)
-    h = max(hm - workplane, 0.6)
+    nx, ny = (12, 8) if (L / max(W, 1e-6)) > 2.0 else (10, 10)
+    xs = [L * (i + 0.5) / nx for i in range(nx)]
+    ys = [W * (j + 0.5) / ny for j in range(ny)]
 
-    # Grid step: finer for corridors / narrow areas
-    aspect = L / max(W, 1e-6)
-    grid = 0.25 if aspect >= 2.2 or min(L, W) <= 2.0 else 0.50
-    grid = max(0.25, min(0.75, grid))
-
-    nx = max(2, int(L / grid))
-    ny = max(2, int(W / grid))
-    xs = [(i + 0.5) * (L / nx) for i in range(nx)]
-    ys = [(j + 0.5) * (W / ny) for j in range(ny)]
-
-    I0 = 1.0 / math.pi
-    vals_raw: List[float] = []
+    vals = []
+    K = (flux_lm / (2.0 * math.pi)) * CU * MF * 0.65
 
     for y in ys:
         for x in xs:
             e = 0.0
             for lx, ly in coords:
-                dx = x - float(lx)
-                dy = y - float(ly)
-                d = math.sqrt(dx * dx + dy * dy + h * h)
-                cos_t = h / d
-                e += I0 * (cos_t * cos_t) / (d * d)
-            vals_raw.append(e)
+                dx = x - lx
+                dy = y - ly
+                d = math.sqrt(dx*dx + dy*dy + h*h)
+                ct = h / d
+                e += K * (ct / (d*d))
+            vals.append(e)
 
-    em_raw = float(sum(vals_raw) / len(vals_raw)) if vals_raw else 0.0
-    emin_raw = float(min(vals_raw)) if vals_raw else 0.0
-    emax_raw = float(max(vals_raw)) if vals_raw else 0.0
-    u0 = float(emin_raw / em_raw) if em_raw > 0 else 0.0
+    emin = float(min(vals))
+    emax = float(max(vals))
+    emean = float(sum(vals) / len(vals)) if vals else 0.0
+    u0 = float(emin / emean) if emean > 0 else 0.0
+    return {"emin": round(emin, 2), "emax": round(emax, 2), "emean": round(emean, 2), "u0": round(u0, 2)}
 
-    return {
-        "emin_raw": round(emin_raw, 6),
-        "emax_raw": round(emax_raw, 6),
-        "emean_raw": round(em_raw, 6),
-        "u0": round(u0, 2),
-        "grid": grid,
-        "nx": nx,
-        "ny": ny,
-    }
+
+def _compute_isolux_values(
+    coords: List[List[float]],
+    L: float,
+    W: float,
+    h_m: float,
+    flux_lm: float,
+    CU: float,
+    MF: float,
+    grid: Dict[str, Any],
+    workplane_h_m: float = 0.8,
+) -> Dict[str, Any]:
+    """Crude point-source isolux grid (fast, MVP).
+
+    Assumptions:
+    - uniform luminous intensity over downward hemisphere (I ≈ flux / (2π))
+    - workplane at 0.8 m
+    - luminaires at ceiling
+    """
+    nx = int(grid.get("nx", 14))
+    ny = int(grid.get("ny", 10))
+
+    Lm = float(L) if L else float(grid.get("width_m", 1.0))
+    Wm = float(W) if W else float(grid.get("height_m", 1.0))
+
+    z = max(0.2, float(h_m) - float(workplane_h_m))
+    I = float(flux_lm) / (2.0 * math.pi)  # cd
+
+    vals: List[float] = []
+    for iy in range(ny):
+        y = (iy + 0.5) * Wm / ny
+        for ix in range(nx):
+            x = (ix + 0.5) * Lm / nx
+            e = 0.0
+            for (lx, ly) in coords:
+                dx = x - lx
+                dy = y - ly
+                d2 = dx * dx + dy * dy + z * z
+                d = math.sqrt(d2)
+                cos_t = z / max(1e-6, d)
+                e += I * cos_t / max(1e-6, d2)
+            e *= float(CU) * float(MF)
+            vals.append(round(e, 1))
+
+    grid["values"] = vals
+    grid["nx"] = nx
+    grid["ny"] = ny
+    grid["width_m"] = Lm
+    grid["height_m"] = Wm
+    return grid
 
 def _choose_layout(tipo_locale: str, concept_type: str, constraints: str) -> str:
     t = (tipo_locale or "").lower()
@@ -411,39 +466,48 @@ def _optimize(
         coords = _layout_coords(n, L, W, layout, uniformity_target=float(pack_params.get('uniformity_target') or 0.6))
         uni = _uniformity_proxy(coords, L, W, h_m, flux, CU, MF)
 
-        # Scale grid illuminance so that mean(E) matches lumen-method Em.
-        em_raw = float(uni.get('emean_raw') or 0.0)
-        scale = (float(Em) / em_raw) if em_raw > 0 else 0.0
-        emin = round(float(uni.get('emin_raw') or 0.0) * scale, 1)
-        emax = round(float(uni.get('emax_raw') or 0.0) * scale, 1)
-        emean = round(float(uni.get('emean_raw') or 0.0) * scale, 1)
-        u0 = float(uni.get('u0') or 0.0)
+        # --- Interreflection (fast approximation)
+        rho_avg = float(pack_params.get('rho_avg') or 0.50)
+        ir_factor = _approx_interreflection_factor(area_m2=area_m2, h_m=h_m, rho_avg=rho_avg)
+        Em_total = round(float(Em) * float(ir_factor), 1)
+
+        # --- Isolux grid (fast point-source approximation)
+        iso = _compute_isolux_values(
+            coords=coords,
+            L=L,
+            W=W,
+            h_m=h_m,
+            flux_lm=flux,
+            CU=CU,
+            MF=MF,
+            grid=_make_isolux_grid(area_m2),
+        )
 
         Wt = round(n * watt, 1)
         wm2 = round(Wt / max(area_m2, 1.0), 2)
 
-        ok_lux = Em >= target_lux * 0.95
+        ok_lux = Em_total >= target_lux * 0.95
         ok_ra  = int(cri) >= int(spec.get("min_ra") or req["ra_min"])
         ok_ugr = True if ugr is None else (int(ugr) <= int(spec.get("target_ugr") or req["ugr_max"]))
-        ok_uni = float(u0 or 0.0) >= uni_min
+        ok_uni = float(uni.get("u0") or 0.0) >= uni_min
 
         return {
             "luminaire": lum,
             "calc": {
-                "n": n, "Em": Em, "Et": target_lux,
+                "n": n, "Em": Em, "Em_total": Em_total, "Et": target_lux,
+                "rho_avg": round(rho_avg, 2), "interreflection_factor": round(ir_factor, 3),
                 "W": Wt, "wm2": wm2,
                 "ok_lux": ok_lux, "ok_ra": ok_ra, "ok_ugr": ok_ugr, "ok_uni": ok_uni,
                 "target_ugr": int(spec.get("target_ugr") or req["ugr_max"]),
                 "min_ra": int(spec.get("min_ra") or req["ra_min"]),
                 "uni_min": round(uni_min, 2),
-                "u0": round(float(u0 or 0.0), 2),
-                "emin": emin,
-                "emax": emax,
-                "emean": emean,
-                "grid": {"step": uni.get("grid"), "nx": uni.get("nx"), "ny": uni.get("ny"), "scale": round(scale, 3)},
+                "u0": uni.get("u0"),
+                "emin_proxy": uni.get("emin"),
+                "emean_proxy": uni.get("emean"),
                 "layout": layout,
                 "dims": {"L": round(L, 2), "W": round(W, 2), "h": round(float(h_m or 2.7), 2)},
                 "coords": coords,
+                "isolux": iso,
                 "scenes": _scene_presets(tipo_locale),
                 "autopilot": {"priority": priority, "iterations": iterations, "status": status},
             }
@@ -563,8 +627,22 @@ def root():
     return {"ok": True, "name": "LuxIA Engine", "hint": "Open /docs for Swagger UI"}
 
 @app.post("/projects/{project_id}/concepts")
-def generate_concepts(project_id: str, payload: Dict[str, Any], x_luxia_token: Optional[str] = Header(None)):
+def generate_concepts(
+    project_id: str,
+    payload: Dict[str, Any],
+    mode: str = Query(default="fast", description="fast | radiance"),
+    x_luxia_token: Optional[str] = Header(None),
+):
     auth(x_luxia_token)
+
+    mode = (mode or "fast").lower().strip()
+    if mode == "radiance":
+        # MVP: we expose the switch in UI, but Radiance execution requires extra setup.
+        # When you're ready we can add: Docker image with radiance + materials + IFC/import.
+        raise HTTPException(
+            status_code=501,
+            detail="Radiance mode not configured yet on this engine. Use fast mode or enable Radiance deployment.",
+        )
 
     areas: List[Dict[str, Any]] = payload.get("areas", []) or []
     style_tokens: Dict[str, Any] = payload.get("style_tokens", {}) or {}
