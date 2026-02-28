@@ -1,0 +1,16 @@
+:root{
+  --bg:#fff; --fg:#111; --muted:rgba(17,17,17,.65); --hair:rgba(17,17,17,.12);
+  --r:16px;
+}
+html,body{background:var(--bg); color:var(--fg); margin:0; padding:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;}
+.main{max-width:980px; margin:0 auto; padding:56px 20px; display:grid; gap:18px;}
+.h1{font-size:44px; line-height:1.05; letter-spacing:-0.02em; margin:0;}
+.p{font-size:18px; line-height:1.6; color:var(--muted); margin:0;}
+.card{border:1px solid var(--hair); border-radius:var(--r); padding:18px;}
+.row{display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
+.btnP{background:#111; color:#fff; border:none; border-radius:12px; padding:12px 16px; font-weight:600; cursor:pointer;}
+.btnP:disabled{opacity:.5; cursor:not-allowed;}
+.btnG{background:transparent; color:var(--fg); border:1px solid var(--hair); border-radius:12px; padding:12px 16px; font-weight:600; cursor:pointer;}
+.small{font-size:12px; color:var(--muted);}
+.list{margin:0; padding-left:18px;}
+pre{white-space:pre-wrap; word-break:break-word; font-size:12px; color:rgba(17,17,17,.75);}
