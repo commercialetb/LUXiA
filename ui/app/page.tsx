@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
+
+const [loading, setLoading] = useState(false);
 
 type AnalyzeResp = any;
 
