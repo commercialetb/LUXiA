@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-
-const [loading, setLoading] = useState(false);
+import { useMemo, useState } from "react";
 
 type AnalyzeResp = any;
 
@@ -15,12 +13,16 @@ function b64ToBlob(b64: string, mime: string) {
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
-// LuxIA settings (simple jobs style)
-const [autonomyLevel, setAutonomyLevel] = useState<number>(1); // 1 = autonoma (default)
-const [designerMode, setDesignerMode] = useState<boolean>(true);
-const [goal, setGoal] = useState<string>("balanced");
-const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola solo se richiesto
+
+  // LuxIA settings (simple jobs style)
+  const [autonomyLevel, setAutonomyLevel] = useState<number>(1); // 1 = autonoma (default)
+  const [designerMode, setDesignerMode] = useState<boolean>(true);
+  const [goal, setGoal] = useState<string>("balanced");
+  const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola solo se richiesto
+
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+
   const [resp, setResp] = useState<AnalyzeResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [userInputs, setUserInputs] = useState<Record<string, any>>({});
@@ -31,33 +33,51 @@ const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola sol
 
   const analyze = async () => {
     if (!file) return;
+
     setBusy(true);
+    setLoading(true);
     setErr(null);
     setResp(null);
 
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("options", JSON.stringify({ autonomy_level: autonomyLevel, designer_mode: designerMode, goal, daylight_mode: daylightMode, ...userInputs }));
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append(
+        "options",
+        JSON.stringify({
+          autonomy_level: autonomyLevel,
+          designer_mode: designerMode,
+          goal,
+          daylight_mode: daylightMode,
+          ...userInputs,
+        })
+      );
 
-    const r = await fetch("/api/analyze", { method: "POST", body: fd });
-    const data = await r.json().catch(() => null);
-    if (!r.ok || !data?.ok) {
-      setErr(data?.error || "Errore analisi");
-    } else {
-      setResp(data);
-      // if engine asks for missing inputs, keep them available to fill
-      if (Array.isArray(data?.needs_user_input) && data.needs_user_input.length) {
-        const next: Record<string, any> = { ...userInputs };
-        for (const q of data.needs_user_input) {
-          const k = q?.key;
-          if (k && next[k] === undefined) next[k] = q?.default ?? "";
+      const r = await fetch("/api/analyze", { method: "POST", body: fd });
+      const data = await r.json().catch(() => null);
+
+      if (!r.ok || !data?.ok) {
+        setErr(data?.error || "Errore analisi");
+      } else {
+        setResp(data);
+
+        // if engine asks for missing inputs, keep them available to fill
+        if (Array.isArray(data?.needs_user_input) && data.needs_user_input.length) {
+          const next: Record<string, any> = { ...userInputs };
+          for (const q of data.needs_user_input) {
+            const k = q?.key;
+            if (k && next[k] === undefined) next[k] = q?.default ?? "";
+          }
+          setUserInputs(next);
         }
-        setUserInputs(next);
       }
+    } catch (e: any) {
+      setErr(e?.message || "Errore analisi");
+    } finally {
+      setBusy(false);
+      setLoading(false);
     }
-    setBusy(false);
   };
-
 
   const sendChat = async () => {
     const message = chatMsg.trim();
@@ -114,31 +134,32 @@ const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola sol
       </div>
 
       <div className="card">
-
-          {Array.isArray(resp.needs_user_input) && resp.needs_user_input.length > 0 && (
-            <div className="card" style={{ marginBottom: 12, border: "1px dashed #999" }}>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Servono alcuni dati per essere precisi</div>
-              <div className="small" style={{ marginBottom: 8 }}>
-                Inseriscili qui e rilancia “Analizza”. (Se lasci i default, LuxIA procede con assunzioni.)
-              </div>
-              <div className="grid">
-                {resp.needs_user_input.map((q, i) => (
-                  <div key={q.key || i} className="field">
-                    <label className="label">{q.question || q.key}</label>
-                    <input
-                      className="inp"
-                      value={userInputs?.[q.key] ?? ""}
-                      onChange={(e) => setUserInputs((s) => ({ ...s, [q.key]: e.target.value }))}
-                      placeholder={String(q.default ?? "")}
-                    />
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop: 10 }}>
-                <button className="btnP" onClick={analyze} disabled={!file || loading}>Analizza (con questi dati)</button>
-              </div>
+        {Array.isArray(resp?.needs_user_input) && resp?.needs_user_input.length > 0 && (
+          <div className="card" style={{ marginBottom: 12, border: "1px dashed #999" }}>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Servono alcuni dati per essere precisi</div>
+            <div className="small" style={{ marginBottom: 8 }}>
+              Inseriscili qui e rilancia “Analizza”. (Se lasci i default, LuxIA procede con assunzioni.)
             </div>
-          )}
+            <div className="grid">
+              {resp.needs_user_input.map((q: any, i: number) => (
+                <div key={q.key || i} className="field">
+                  <label className="label">{q.question || q.key}</label>
+                  <input
+                    className="inp"
+                    value={userInputs?.[q.key] ?? ""}
+                    onChange={(e) => setUserInputs((s) => ({ ...s, [q.key]: e.target.value }))}
+                    placeholder={String(q.default ?? "")}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button className="btnP" onClick={analyze} disabled={!file || loading}>
+                Analizza (con questi dati)
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="row">
           <input
@@ -146,46 +167,47 @@ const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola sol
             accept="application/pdf,image/*,.dxf,.dwg"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
-<div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-  <label className="small">
-    Autonoma
-    <select
-      className="input"
-      value={autonomyLevel}
-      onChange={(e) => {
-        const v = Number(e.target.value);
-        setAutonomyLevel(v);
-        // default: autonomy>=1 enables designer
-        if (v >= 1) setDesignerMode(true);
-        if (v === 0) setDesignerMode(false);
-      }}
-      style={{ marginLeft: 8 }}
-    >
-      <option value={0}>0 (solo analisi)</option>
-      <option value={1}>1 (default)</option>
-      <option value={2}>2 (aggressiva)</option>
-    </select>
-  </label>
 
-  <label className="small">
-    Obiettivo
-    <select className="input" value={goal} onChange={(e) => setGoal(e.target.value)} style={{ marginLeft: 8 }}>
-      <option value="balanced">bilanciato</option>
-      <option value="min_qty">min quantità</option>
-      <option value="min_power">min potenza</option>
-    </select>
-  </label>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            <label className="small">
+              Autonoma
+              <select
+                className="input"
+                value={autonomyLevel}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setAutonomyLevel(v);
+                  if (v >= 1) setDesignerMode(true);
+                  if (v === 0) setDesignerMode(false);
+                }}
+                style={{ marginLeft: 8 }}
+              >
+                <option value={0}>0 (solo analisi)</option>
+                <option value={1}>1 (default)</option>
+                <option value={2}>2 (aggressiva)</option>
+              </select>
+            </label>
 
-  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-    <input type="checkbox" checked={designerMode} onChange={(e) => setDesignerMode(e.target.checked)} />
-    Designer layer
-  </label>
+            <label className="small">
+              Obiettivo
+              <select className="input" value={goal} onChange={(e) => setGoal(e.target.value)} style={{ marginLeft: 8 }}>
+                <option value="balanced">bilanciato</option>
+                <option value="min_qty">min quantità</option>
+                <option value="min_power">min potenza</option>
+              </select>
+            </label>
 
-  <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-    <input type="checkbox" checked={daylightMode} onChange={(e) => setDaylightMode(e.target.checked)} />
-    Daylight (solo se richiesto)
-  </label>
-</div>
+            <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={designerMode} onChange={(e) => setDesignerMode(e.target.checked)} />
+              Designer layer
+            </label>
+
+            <label className="small" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={daylightMode} onChange={(e) => setDaylightMode(e.target.checked)} />
+              Daylight (solo se richiesto)
+            </label>
+          </div>
+
           <button className="btnP" onClick={analyze} disabled={!file || busy}>
             {busy ? "Analisi…" : "Analizza"}
           </button>
@@ -198,33 +220,36 @@ const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola sol
               // eslint-disable-next-line @next/next/no-img-element
               <img src={previewUrl} alt="preview" style={{ maxWidth: "100%", borderRadius: 12, marginTop: 10 }} />
             ) : (
-              <a className="small" href={previewUrl} target="_blank" rel="noreferrer">Apri PDF</a>
+              <a className="small" href={previewUrl} target="_blank" rel="noreferrer">
+                Apri PDF
+              </a>
             )}
           </div>
         )}
       </div>
 
-
-          <div className="card" style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 800, fontSize: 16 }}>Chat LuxIA</div>
-            <div className="small" style={{ marginBottom: 8 }}>Chiedimi qualsiasi cosa sul progetto (UNI, scelte apparecchi, alternative, ecc.).</div>
-            <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid #ddd", borderRadius: 10, padding: 10 }}>
-              {chatHistory.length === 0 ? (
-                <div className="small">Scrivi un messaggio per iniziare.</div>
-              ) : (
-                chatHistory.map((m, idx) => (
-                  <div key={idx} style={{ marginBottom: 8 }}>
-                    <div className="small" style={{ opacity: 0.7 }}>{m.role === "user" ? "Tu" : "LuxIA"}</div>
-                    <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
-                  </div>
-                ))
-              )}
-            </div>
-            <div className="row" style={{ marginTop: 10 }}>
-              <input className="inp" value={chatMsg} onChange={(e) => setChatMsg(e.target.value)} placeholder="Scrivi qui…" />
-              <button className="btnG" onClick={sendChat}>Invia</button>
-            </div>
-          </div>
+      <div className="card" style={{ marginTop: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 16 }}>Chat LuxIA</div>
+        <div className="small" style={{ marginBottom: 8 }}>
+          Chiedimi qualsiasi cosa sul progetto (UNI, scelte apparecchi, alternative, ecc.).
+        </div>
+        <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid #ddd", borderRadius: 10, padding: 10 }}>
+          {chatHistory.length === 0 ? (
+            <div className="small">Scrivi un messaggio per iniziare.</div>
+          ) : (
+            chatHistory.map((m, idx) => (
+              <div key={idx} style={{ marginBottom: 8 }}>
+                <div className="small" style={{ opacity: 0.7 }}>{m.role === "user" ? "Tu" : "LuxIA"}</div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <input className="inp" value={chatMsg} onChange={(e) => setChatMsg(e.target.value)} placeholder="Scrivi qui…" />
+          <button className="btnG" onClick={sendChat}>Invia</button>
+        </div>
+      </div>
 
       {err && (
         <div className="card">
@@ -250,7 +275,9 @@ const [daylightMode, setDaylightMode] = useState<boolean>(false); // calcola sol
                 </>
               )}
               {!pass && (
-                <button className="btnP" onClick={() => { setResp(null); setErr(null); }} >Carica versione corretta</button>
+                <button className="btnP" onClick={() => { setResp(null); setErr(null); }}>
+                  Carica versione corretta
+                </button>
               )}
             </div>
           </div>
