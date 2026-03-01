@@ -62,7 +62,9 @@ from reportlab.lib.utils import ImageReader
 
 from PIL import Image, ImageDraw
 import numpy as np
+from fastapi import FastAPI
 
+app = FastAPI(title="LuxIA Engine", version="22.x-vnext")
 
 
 # ==========================================================
